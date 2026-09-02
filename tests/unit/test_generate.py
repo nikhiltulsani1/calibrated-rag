@@ -51,6 +51,29 @@ def test_generates_answer_with_citations(monkeypatch):
     assert answer.citations[0].section == "intro"
 
 
+def test_fullwidth_citation_brackets_are_normalized_and_still_parsed():
+    # Real bug found live (Phase 2 verification, 2026-09-02): a model on
+    # the retry ladder occasionally emits fullwidth/CJK brackets around a
+    # citation marker ("【1】") instead of the ASCII "[1]" every prompt
+    # here instructs. Before the fix, the citation-extraction regex only
+    # matched ASCII brackets, so this silently produced zero citations —
+    # no crash, no error, just a real citation quietly dropped.
+    candidates = [RankedCandidate(id="c1", text="RLHF uses human feedback.", score=0.9)]
+    metadata = {"c1": {"title": "Paper One", "paper_id": "1111.1111", "section": "intro"}}
+    fake = CompletionResult(
+        provider="groq", model_served="m", content="RLHF trains models using human feedback【1】."
+    )
+    with patch("src.reason.generate.complete", return_value=fake):
+        answer = generate_answer("what is RLHF", candidates, metadata)
+
+    assert len(answer.citations) == 1
+    assert answer.citations[0].chunk_id == "c1"
+    # The visible answer text is normalized too, not just extraction —
+    # the reader should never see the inconsistent fullwidth marker.
+    assert "【" not in answer.text
+    assert "[1]" in answer.text
+
+
 def test_only_actually_cited_markers_become_citations():
     # The model was given two passages but only cited one — the unused
     # passage must not appear in the citation list just because it was

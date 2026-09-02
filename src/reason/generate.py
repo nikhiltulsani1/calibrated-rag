@@ -104,6 +104,29 @@ GENERATION_UNAVAILABLE_TEXT = (
 # signal.
 _DECLINE_TAG = "[DECLINED_TO_GUESS]"
 
+# Real bug found live (Phase 2 verification, 2026-09-02): a model on the
+# retry ladder occasionally emits fullwidth/CJK bracket variants around a
+# citation marker (e.g. "【1】" instead of "[1]") instead of the plain
+# ASCII brackets every prompt in this file instructs — observed directly,
+# not assumed. The citation-extraction regex below only ever matched
+# ASCII `[N]`, so a marker in this shape silently produced ZERO parsed
+# citations: no "Sources" section, no Citation objects reaching
+# citation_integrity/groundedness, even though the model plainly cited a
+# real passage. Normalizing to ASCII brackets before any of that runs
+# fixes both the invisible extraction miss and the visible answer text
+# (which would otherwise show the reader an inconsistent "【1】").
+# str.translate over a full dict, not a couple of .replace() calls, so
+# adding another observed bracket variant later is a one-line addition
+# here rather than a new call site.
+_BRACKET_NORMALIZE_TABLE = str.maketrans(
+    {
+        "【": "[",
+        "】": "]",
+        "［": "[",  # U+FF3B fullwidth left square bracket
+        "］": "]",  # U+FF3D fullwidth right square bracket
+    }
+)
+
 # Real structural signal for a rule-6 premise rejection — see
 # declined_to_guess's own comment for the live evidence (u021) and why
 # this is scoped narrowly to rule 6's own instructed phrasing rather
@@ -234,6 +257,7 @@ def generate_answer(
         self_reported_decline = content.endswith(_DECLINE_TAG)
         if self_reported_decline:
             content = content[: -len(_DECLINE_TAG)].rstrip()
+        content = content.translate(_BRACKET_NORMALIZE_TABLE)
 
         abstained = content.startswith(ABSTAIN_TEXT)
         span.set_attribute("generate.abstained", abstained)
