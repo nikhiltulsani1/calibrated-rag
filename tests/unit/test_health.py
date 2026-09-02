@@ -107,3 +107,78 @@ def test_check_redis_catches_a_real_exception():
         result = _check_redis()
     assert result is not None
     assert "redis" in result
+
+
+# ---------------------------------------------------------------------
+# Phase 2 — real gaps found live while writing render.yaml: none of the
+# three checks above understood the live free-tier deployment's real
+# config (DATABASE_URL instead of discrete POSTGRES_* vars, no
+# OpenSearch at all, Upstash's required TLS+password). Left unfixed,
+# /readyz would have permanently reported "not ready" on Render.
+# ---------------------------------------------------------------------
+
+
+def test_check_postgres_uses_database_url_when_set(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "postgresql://u:p@neon.example.com/db?sslmode=require")
+    with patch("psycopg.connect") as mock_connect:
+        from src.app.routes.health import _check_postgres
+
+        mock_connect.return_value.__enter__ = MagicMock(return_value=MagicMock())
+        mock_connect.return_value.__exit__ = MagicMock(return_value=False)
+        _check_postgres()
+    called_url = mock_connect.call_args.args[0]
+    assert called_url.startswith("postgresql://u:p@neon.example.com")
+
+
+def test_check_opensearch_skipped_when_retrieval_backend_is_postgres(monkeypatch):
+    monkeypatch.setenv("RETRIEVAL_BACKEND", "postgres")
+    with patch("opensearchpy.OpenSearch", side_effect=RuntimeError("should never be called")):
+        from src.app.routes.health import _check_opensearch
+
+        result = _check_opensearch()
+    assert result is None
+
+
+def test_check_opensearch_still_runs_on_the_default_backend(monkeypatch):
+    monkeypatch.delenv("RETRIEVAL_BACKEND", raising=False)
+    with patch("opensearchpy.OpenSearch", side_effect=RuntimeError("connection refused")):
+        from src.app.routes.health import _check_opensearch
+
+        result = _check_opensearch()
+    assert result is not None
+    assert "opensearch" in result
+
+
+def test_check_redis_passes_password_and_tls_when_configured(monkeypatch):
+    monkeypatch.setenv("REDIS_HOST", "usw1-example.upstash.io")
+    monkeypatch.setenv("REDIS_PASSWORD", "real-token")
+    monkeypatch.setenv("REDIS_SSL", "true")
+    with patch("redis.Redis") as mock_redis:
+        from src.app.routes.health import _check_redis
+
+        _check_redis()
+    assert mock_redis.call_args.kwargs["password"] == "real-token"
+    assert mock_redis.call_args.kwargs["ssl"] is True
+
+
+def test_readyz_reports_ready_on_a_simulated_render_deployment(monkeypatch):
+    # The end-to-end regression this whole section guards: with
+    # RETRIEVAL_BACKEND=postgres and DATABASE_URL/REDIS_* set the way
+    # render.yaml configures them (no OPENSEARCH_* vars at all), /readyz
+    # must report ready given reachable Postgres/Redis — not silently
+    # fail because it never learned about this deployment shape.
+    monkeypatch.setenv("RETRIEVAL_BACKEND", "postgres")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://u:p@neon.example.com/db")
+    monkeypatch.setenv("REDIS_HOST", "usw1-example.upstash.io")
+    monkeypatch.setenv("REDIS_PASSWORD", "real-token")
+    monkeypatch.setenv("REDIS_SSL", "true")
+    monkeypatch.delenv("OPENSEARCH_HOST", raising=False)
+    monkeypatch.delenv("OPENSEARCH_ADMIN_PASSWORD", raising=False)
+
+    client = TestClient(app)
+    with patch("src.app.routes.health._check_postgres", return_value=None), patch(
+        "src.app.routes.health._check_redis", return_value=None
+    ):
+        response = client.get("/readyz")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ready"}

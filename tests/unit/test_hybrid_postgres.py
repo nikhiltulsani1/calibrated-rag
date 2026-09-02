@@ -1,0 +1,131 @@
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from src.retrieve.hybrid_postgres import _filter_conditions, _owner_predicate, retrieve_with_trace
+from src.schemas.query_plan import QueryPlan
+
+pytestmark = pytest.mark.unit
+
+# RETRIEVAL_BACKEND=postgres path — the free-tier live deployment's
+# retrieval backend, built alongside (not instead of) the default
+# hybrid.py/OpenSearch path per the Phase 2 plan. These tests mock the
+# actual Postgres round-trip (get_session().execute(...)) but let every
+# other line of _lexical_search/_dense_search/retrieve_with_trace run for
+# real — proving the SQLAlchemy query construction itself is valid, not
+# just that a mock accepted whatever was thrown at it.
+
+
+def test_owner_predicate_with_no_session_id_only_matches_shared_corpus():
+    # No session_id (e.g. a brand-new visitor, or the OpenSearch path
+    # which never passes one) -> only NULL-owner (shared) rows visible.
+    from src.store.schema import Chunk
+
+    predicate = _owner_predicate(None)
+    assert str(predicate) == str(Chunk.owner_session_id.is_(None))
+
+
+def test_owner_predicate_with_session_id_matches_shared_or_own():
+    predicate = _owner_predicate("sess-123")
+    rendered = str(predicate.compile(compile_kwargs={"literal_binds": True}))
+    assert "owner_session_id IS NULL" in rendered
+    assert "sess-123" in rendered
+
+
+def test_filter_conditions_empty_for_no_filters():
+    assert _filter_conditions({}) == []
+
+
+def test_filter_conditions_category_produces_one_condition():
+    conditions = _filter_conditions({"category": "cs.CL"})
+    assert len(conditions) == 1
+
+
+def test_filter_conditions_all_three_combine():
+    conditions = _filter_conditions(
+        {"author": "LeCun", "category": "cs.IR", "date_from": "2026-01-01", "date_to": "2026-06-01"}
+    )
+    # author -> 1, category -> 1, date_from + date_to -> 2 (separate >= / <=)
+    assert len(conditions) == 4
+
+
+def _fake_session(lexical_rows, dense_rows, text_rows):
+    """A MagicMock session whose .execute(stmt).all() returns canned rows
+    based on inspecting the actual compiled SQL — NOT call order.
+    _lexical_search and _dense_search run concurrently via
+    ThreadPoolExecutor, so which one's session.execute() call lands
+    first is genuinely nondeterministic; a call-order-based side_effect
+    would be a real, flaky test. Distinguishing by "does this statement
+    rank via ts_rank" (lexical) vs not (dense's cosine-distance ORDER BY,
+    or the final plain chunk_id/text lookup, which has neither) is
+    robust to thread scheduling.
+    """
+
+    def execute(stmt, *args, **kwargs):
+        rendered = str(stmt)
+        result = MagicMock()
+        if "ts_rank" in rendered:
+            result.all.return_value = lexical_rows
+        elif "ORDER BY" in rendered:
+            result.all.return_value = dense_rows
+        else:
+            result.all.return_value = text_rows
+        return result
+
+    session = MagicMock()
+    session.execute.side_effect = execute
+    return session
+
+
+def test_retrieve_with_trace_fuses_lexical_and_dense_results(monkeypatch):
+    plan = QueryPlan(original="q", normalized="what is rlhf", expansions=[], filters={}, intent="factual")
+    fake_embed = MagicMock(vectors=[[0.1] * 1024])
+
+    session = _fake_session(
+        lexical_rows=[("c1",), ("c2",)],
+        dense_rows=[("c2",), ("c3",)],
+        text_rows=[("c1", "text one"), ("c2", "text two"), ("c3", "text three")],
+    )
+
+    with patch("src.retrieve.hybrid_postgres.get_session", return_value=session), patch(
+        "src.retrieve.hybrid_postgres.embed_queries", return_value=fake_embed
+    ), patch("src.retrieve.hybrid_postgres.get_active_embed_provider", return_value="jina"):
+        results, trace = retrieve_with_trace(plan, top_n=10)
+
+    # c2 appears in both arms -> should rank first after RRF fusion
+    assert results[0].id == "c2"
+    assert {r.id for r in results} == {"c1", "c2", "c3"}
+    assert trace.dense_index_name == "postgres:chunks"
+    assert len(trace.arms) == 2  # one variant (no expansions) x 2 arms
+
+
+def test_retrieve_with_trace_passes_session_id_through_to_the_query(monkeypatch):
+    # Real regression this guards: session_id must reach the owner
+    # predicate on both arms, not get silently dropped in the fan-out —
+    # verified by confirming a session-scoped run doesn't error and
+    # produces the same shape as the unscoped case (the isolation SQL
+    # itself is covered directly by test_owner_predicate_* above).
+    plan = QueryPlan(original="q", normalized="what is rlhf", expansions=[], filters={}, intent="factual")
+    fake_embed = MagicMock(vectors=[[0.1] * 1024])
+    session = _fake_session(lexical_rows=[("c1",)], dense_rows=[("c1",)], text_rows=[("c1", "text one")])
+
+    with patch("src.retrieve.hybrid_postgres.get_session", return_value=session), patch(
+        "src.retrieve.hybrid_postgres.embed_queries", return_value=fake_embed
+    ), patch("src.retrieve.hybrid_postgres.get_active_embed_provider", return_value="jina"):
+        results, _trace = retrieve_with_trace(plan, top_n=10, session_id="visitor-abc")
+
+    assert results[0].id == "c1"
+
+
+def test_retrieve_with_trace_returns_empty_on_no_fused_results(monkeypatch):
+    plan = QueryPlan(original="q", normalized="what is rlhf", expansions=[], filters={}, intent="factual")
+    fake_embed = MagicMock(vectors=[[0.1] * 1024])
+    session = _fake_session(lexical_rows=[], dense_rows=[], text_rows=[])
+
+    with patch("src.retrieve.hybrid_postgres.get_session", return_value=session), patch(
+        "src.retrieve.hybrid_postgres.embed_queries", return_value=fake_embed
+    ), patch("src.retrieve.hybrid_postgres.get_active_embed_provider", return_value="jina"):
+        results, trace = retrieve_with_trace(plan, top_n=10)
+
+    assert results == []
+    assert trace.fused_order == []

@@ -34,15 +34,17 @@ def _check_postgres() -> str | None:
     try:
         import psycopg
 
-        user = os.environ["POSTGRES_USER"]
-        password = os.environ["POSTGRES_PASSWORD"]
-        db = os.environ["POSTGRES_DB"]
-        host = os.environ.get("POSTGRES_HOST", "localhost")
-        port = os.environ.get("POSTGRES_PORT", "5432")
-        with psycopg.connect(
-            f"postgresql://{user}:{password}@{host}:{port}/{db}",
-            connect_timeout=_CHECK_TIMEOUT_SECONDS,
-        ) as conn:
+        # Phase 2: this probe used to only understand the discrete
+        # POSTGRES_USER/PASSWORD/DB/HOST vars compose.yml's local stack
+        # sets — on the live deployment only DATABASE_URL is set (Neon's
+        # connection string), so this always failed there with a
+        # KeyError, same class of gap _database_url() itself had (see
+        # src/store/relational.py) before that was fixed. Reuses that
+        # same fallback logic rather than a second hand-rolled copy.
+        from src.store.relational import _database_url
+
+        url = _database_url().replace("postgresql+psycopg://", "postgresql://", 1)
+        with psycopg.connect(url, connect_timeout=_CHECK_TIMEOUT_SECONDS) as conn:
             conn.execute("SELECT 1")
         return None
     except Exception as exc:
@@ -50,6 +52,17 @@ def _check_postgres() -> str | None:
 
 
 def _check_opensearch() -> str | None:
+    # Phase 2: RETRIEVAL_BACKEND=postgres deployments (the live
+    # free-tier one) have no OpenSearch at all — see hybrid_postgres.py
+    # and the Phase 2 plan §2. Checking for it unconditionally would
+    # make this probe permanently report "not ready" on that
+    # deployment, which is exactly the kind of false-negative readiness
+    # check A1/D1's own design (see this file's module docstring
+    # intent) exists to avoid. The default RETRIEVAL_BACKEND=opensearch
+    # path (local clone-and-run) is completely unaffected — this check
+    # still runs there exactly as before.
+    if os.environ.get("RETRIEVAL_BACKEND", "opensearch") == "postgres":
+        return None
     try:
         from opensearchpy import OpenSearch
 
@@ -75,10 +88,17 @@ def _check_redis() -> str | None:
     try:
         import redis
 
+        # Same Upstash TLS/password gap already found and fixed in
+        # src/platform/cache.py::get_client() — this is a separate,
+        # hand-rolled connection (deliberately not reusing the shared
+        # client, see this file's own timeout-isolation comment above),
+        # so it needed the identical fix applied here too.
         host = os.environ.get("REDIS_HOST", "localhost")
         port = int(os.environ.get("REDIS_PORT", "6379"))
+        password = os.environ.get("REDIS_PASSWORD") or None
+        ssl = os.environ.get("REDIS_SSL", "false").lower() == "true"
         client = redis.Redis(
-            host=host, port=port,
+            host=host, port=port, password=password, ssl=ssl,
             socket_connect_timeout=_CHECK_TIMEOUT_SECONDS,
             socket_timeout=_CHECK_TIMEOUT_SECONDS,
         )

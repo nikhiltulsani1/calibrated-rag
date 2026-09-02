@@ -1,0 +1,76 @@
+# Phase 2 — Render Blueprint for the live, free-tier deployment.
+#
+# This deploys ONLY the FastAPI app itself (from the existing Dockerfile,
+# unchanged). Postgres and Redis are NOT services here — they're the
+# already-provisioned external Neon and Upstash instances (see
+# project-docs/technical_details.md and the Phase 2 plan). compose.yml
+# stays completely separate and untouched: it's still the real
+# clone-and-run path (Postgres + OpenSearch + Redis + api, all local),
+# unaffected by this file's existence.
+#
+# Deploy: connect this repo in the Render dashboard (New -> Blueprint),
+# Render reads this file automatically. Every `sync: false` var below
+# must be filled in by hand in the dashboard after the first deploy is
+# created — real secrets are never committed to the repo.
+
+services:
+  - type: web
+    name: calibrated-rag
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /readyz
+    envVars:
+      # Selects the free-tier retrieval backend (src/retrieve/hybrid_postgres.py)
+      # instead of the default OpenSearch path — see the Phase 2 plan §2.
+      # This is the ONE thing that makes this deployment behave
+      # differently from a local `docker compose up`; everything else is
+      # the exact same application code.
+      - key: RETRIEVAL_BACKEND
+        value: postgres
+
+      # Neon connection string — copy the "postgresql://..." string Neon
+      # gives you verbatim; src/store/relational.py::_database_url()
+      # normalizes the driver automatically (real bug found and fixed
+      # during the Phase 2 Neon check — see project-docs/result.md).
+      - key: DATABASE_URL
+        sync: false
+
+      # Upstash Redis — Endpoint/Port/Password from the Upstash console's
+      # connection details (Redis protocol, not the REST API tab).
+      - key: REDIS_HOST
+        sync: false
+      - key: REDIS_PORT
+        sync: false
+      - key: REDIS_PASSWORD
+        sync: false
+      - key: REDIS_SSL
+        value: "true"
+
+      # Encrypts the BYOK settings cookie (Phase 2 §4) — Render generates
+      # a real random value for this automatically, nothing to paste in.
+      - key: COOKIE_ENCRYPTION_KEY
+        generateValue: true
+
+      # Required by arXiv's own API etiquette for the courtesy User-Agent
+      # header (src/ingest/paper_source.py) — any real contact email.
+      - key: ARXIV_CONTACT_EMAIL
+        sync: false
+
+      # Optional owner-side fallback keys (Phase 2 §4.5) — used until
+      # BYOK (stage 5) is live, and afterward only as a fallback for a
+      # visitor who hasn't entered their own key yet. None of these are
+      # required for the app to boot; leave any of them blank in the
+      # dashboard to skip that provider entirely.
+      - key: GROQ_API_KEY
+        sync: false
+      - key: JINA_API_KEY
+        sync: false
+      - key: MISTRAL_API_KEY
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: NVIDIA_API_KEY
+        sync: false
+      - key: COHERE_API_KEY
+        sync: false

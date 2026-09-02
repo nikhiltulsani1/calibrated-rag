@@ -5,6 +5,11 @@ httpx==0.28.1
 SQLAlchemy==2.0.52
 psycopg[binary]==3.2.3
 opensearch-py==3.2.0
+# Phase 2: the RETRIEVAL_BACKEND=postgres path (src/retrieve/hybrid_postgres.py)
+# used by the free-tier live deployment only — opensearch-py above stays,
+# still required by the default RETRIEVAL_BACKEND=opensearch path this
+# package doesn't replace.
+pgvector==0.4.2
 pydantic==2.13.4
 redis==8.1.0
 pymupdf==1.28.2

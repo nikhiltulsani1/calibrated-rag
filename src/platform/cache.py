@@ -15,7 +15,17 @@ def get_client() -> redis.Redis:
     if _client is None:
         host = os.environ.get("REDIS_HOST", "localhost")
         port = int(os.environ.get("REDIS_PORT", "6379"))
-        _client = redis.Redis(host=host, port=port, decode_responses=True)
+        # Phase 2: Upstash's free tier (the only viable free-tier Redis
+        # found for the live deployment) requires TLS and a password —
+        # local docker compose Redis has neither, so both are env-gated
+        # and off by default rather than assumed, matching the
+        # override-wins convention already used by embed_toggle.py /
+        # models.py. Upstash's endpoint is confirmed standard
+        # Redis-protocol (rediss://), not REST-only, so this is a
+        # parameter change, not a client-library swap.
+        password = os.environ.get("REDIS_PASSWORD") or None
+        ssl = os.environ.get("REDIS_SSL", "false").lower() == "true"
+        _client = redis.Redis(host=host, port=port, password=password, ssl=ssl, decode_responses=True)
     return _client
 
 

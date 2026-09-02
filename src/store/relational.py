@@ -13,6 +13,17 @@ _engine: Engine | None = None
 
 def _database_url() -> str:
     if url := os.environ.get("DATABASE_URL"):
+        # Phase 2: Neon (and most managed Postgres providers) hand out a
+        # bare `postgresql://` connection string. SQLAlchemy resolves
+        # that to psycopg2 by default, which isn't installed here
+        # (requirements.txt only has psycopg[binary], psycopg3) — a real
+        # bug found live: every provided-DATABASE_URL connection
+        # silently failed with ModuleNotFoundError until this was
+        # normalized. `postgresql+psycopg://` forces the driver that's
+        # actually installed, without requiring the operator to know to
+        # edit the connection string Neon gave them verbatim.
+        if url.startswith("postgresql://"):
+            url = url.replace("postgresql://", "postgresql+psycopg://", 1)
         return url
     user = os.environ["POSTGRES_USER"]
     password = os.environ["POSTGRES_PASSWORD"]
