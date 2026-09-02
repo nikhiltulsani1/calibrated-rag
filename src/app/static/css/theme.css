@@ -1,0 +1,250 @@
+/* Light is the default palette (bare :root). Dark is layered on top via
+   prefers-color-scheme (guarded so an explicit light choice always wins)
+   and again via [data-theme="dark"] for the manual toggle below. Every
+   component reads these tokens — nothing hardcodes a color directly, so
+   both themes stay correct as a set. */
+:root {
+  --bg: #f6f7f9;
+  --panel: #ffffff;
+  --panel-alt: #eef1f5;
+  --border: #dde2e8;
+  --text: #171a1f;
+  --text-dim: #5a6270;
+  --accent: #2f6fe0;
+  --accent-dim: #e2ebfb;
+  --accent-ink: #ffffff;
+  --good: #16803c;
+  --good-bg: #e3f6ea;
+  --bad: #c02626;
+  --bad-bg: #fbe4e4;
+  --warn: #9a5b06;
+  --warn-bg: #fdf0dc;
+  --arm-lexical: #1d4ed8;
+  --arm-dense: #7c3aed;
+  --radius: 8px;
+  --shadow: 0 1px 2px rgba(20,23,28,0.04), 0 6px 16px -10px rgba(20,23,28,0.15);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0b0d10;
+    --panel: #14171c;
+    --panel-alt: #1b1f26;
+    --border: #262b33;
+    --text: #e6e9ef;
+    --text-dim: #9aa3b2;
+    --accent: #6ea8fe;
+    --accent-dim: #24334d;
+    --accent-ink: #0b0d10;
+    --good: #4ade80;
+    --good-bg: rgba(74,222,128,0.15);
+    --bad: #f87171;
+    --bad-bg: rgba(248,113,113,0.15);
+    --warn: #fbbf24;
+    --warn-bg: rgba(251,191,36,0.15);
+    --arm-lexical: #93c5fd;
+    --arm-dense: #c4b5fd;
+    --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 8px 22px -12px rgba(0,0,0,0.55);
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg: #0b0d10;
+  --panel: #14171c;
+  --panel-alt: #1b1f26;
+  --border: #262b33;
+  --text: #e6e9ef;
+  --text-dim: #9aa3b2;
+  --accent: #6ea8fe;
+  --accent-dim: #24334d;
+  --accent-ink: #0b0d10;
+  --good: #4ade80;
+  --good-bg: rgba(74,222,128,0.15);
+  --bad: #f87171;
+  --bad-bg: rgba(248,113,113,0.15);
+  --warn: #fbbf24;
+  --warn-bg: rgba(251,191,36,0.15);
+  --arm-lexical: #93c5fd;
+  --arm-dense: #c4b5fd;
+  --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 8px 22px -12px rgba(0,0,0,0.55);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.5 -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+a { color: var(--accent); }
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+nav {
+  display: flex;
+  gap: 1.5rem;
+  padding: 1rem 1.5rem;
+  border-bottom: 1px solid var(--border);
+  align-items: center;
+}
+
+nav a {
+  color: var(--text-dim);
+  text-decoration: none;
+  font-weight: 500;
+}
+
+nav a:hover, nav a.active { color: var(--text); }
+
+nav .brand { color: var(--text); font-weight: 700; margin-right: auto; }
+
+.theme-toggle {
+  background: var(--panel-alt);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.35rem 0.8rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.theme-toggle:hover { color: var(--text); border-color: var(--accent); }
+
+main {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 2rem 1.5rem;
+}
+
+h1 { font-size: 1.4rem; margin-bottom: 0.25rem; }
+h2 { font-size: 1.1rem; margin: 2rem 0 0.75rem; }
+p.subtitle { color: var(--text-dim); margin-top: 0; }
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.25rem;
+  margin-bottom: 1rem;
+  box-shadow: var(--shadow);
+}
+
+form.ask-form {
+  display: flex;
+  gap: 0.5rem;
+}
+
+input[type="text"] {
+  flex: 1;
+  background: var(--panel-alt);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  padding: 0.7rem 0.9rem;
+  font-size: 1rem;
+}
+
+button {
+  background: var(--accent);
+  color: var(--accent-ink);
+  border: none;
+  border-radius: var(--radius);
+  padding: 0.7rem 1.2rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+button:hover { opacity: 0.9; }
+button:disabled { opacity: 0.5; cursor: default; }
+
+.answer-text { white-space: pre-wrap; font-size: 1.02rem; }
+
+.abstained {
+  border-left: 3px solid var(--warn);
+  padding-left: 0.9rem;
+  color: var(--text-dim);
+  font-style: italic;
+}
+
+.citation {
+  display: inline-block;
+  background: var(--accent-dim);
+  color: var(--text);
+  border-radius: 4px;
+  padding: 0 0.4rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+  margin: 0 0.1rem;
+  text-decoration: none;
+}
+
+.citation-detail {
+  margin-top: 0.75rem;
+  padding: 0.75rem;
+  background: var(--panel-alt);
+  border-radius: var(--radius);
+  font-size: 0.9rem;
+  display: none;
+}
+
+.citation-detail.open { display: block; }
+
+.badge {
+  display: inline-block;
+  border-radius: 4px;
+  padding: 0.1rem 0.5rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.badge.pass { background: var(--good-bg); color: var(--good); }
+.badge.fail { background: var(--bad-bg); color: var(--bad); }
+.badge.degraded { background: var(--warn-bg); color: var(--warn); }
+
+.stage {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 0.75rem;
+  overflow: hidden;
+}
+
+.stage-header {
+  background: var(--panel-alt);
+  padding: 0.6rem 1rem;
+  font-weight: 600;
+  display: flex;
+  justify-content: space-between;
+}
+
+.stage-body { padding: 0.9rem 1rem; }
+
+.stage.skipped { opacity: 0.45; }
+.stage.stopped-here .stage-header { color: var(--bad); }
+
+table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+th, td { text-align: left; padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border); }
+th { color: var(--text-dim); font-weight: 600; }
+
+.rank-col { width: 4rem; color: var(--text-dim); }
+.arm-lexical { color: var(--arm-lexical); }
+.arm-dense { color: var(--arm-dense); }
+
+.empty-state { color: var(--text-dim); padding: 2rem; text-align: center; }
+
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85rem; }
+
+/* HTMX's own convention: indicators are hidden until a request is in
+   flight, at which point htmx adds .htmx-request to the indicator (or an
+   ancestor) and this rule makes it visible. Missing this is what made
+   the spinner text show up permanently instead of only during a request
+   — caught by actually looking at the rendered page. */
+.htmx-indicator { opacity: 0; transition: opacity 150ms ease-in; }
+.htmx-request.htmx-indicator,
+.htmx-request .htmx-indicator { opacity: 1; }

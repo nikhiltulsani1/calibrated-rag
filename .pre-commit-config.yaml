@@ -1,0 +1,14 @@
+# R6 threat-model closure: formalizes the one-time manual grep this
+# project already ran (README's R6 audit — confirmed zero API keys reach
+# logs/traces) into an enforced check on every future commit. Install
+# once locally with `pre-commit install` (documented in README) — this
+# file alone does nothing until that's run; it modifies local git hooks,
+# which is a step this repo's tooling deliberately leaves to the operator
+# rather than doing on their behalf.
+repos:
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets
+        args: ["--baseline", ".secrets.baseline"]
+        exclude: ^\.venv/

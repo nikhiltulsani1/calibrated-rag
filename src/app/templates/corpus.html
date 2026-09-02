@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}Corpus — Calibrated RAG{% endblock %}
+{% block content %}
+<h1>Corpus</h1>
+<p class="subtitle">What the system actually knows.</p>
+
+{% if error %}
+<div class="card" style="border-left: 3px solid var(--bad);">
+  <strong style="color: var(--bad);">Couldn't load the corpus.</strong>
+  <p>{{ error }}</p>
+</div>
+{% else %}
+<div class="card">
+  <strong>{{ paper_count }}</strong> papers, <strong>{{ chunk_count }}</strong> chunks ingested.
+</div>
+
+<h2>Coverage</h2>
+<div class="card">
+  {% if categories %}
+  <p><strong>Categories:</strong> {{ categories|join(', ') }}</p>
+  {% endif %}
+  {% if date_range %}
+  <p><strong>Date range:</strong> {{ date_range[0] }} — {{ date_range[1] }}</p>
+  {% endif %}
+  <p class="subtitle">No corpus snapshot (A3b) exists yet — this page reads the live table directly, so there is nothing to compare it against for drift. That comparison lands once A3b's snapshot mechanism is built.</p>
+</div>
+
+<h2>Papers</h2>
+{% if not papers %}
+<p class="empty-state">No papers ingested yet.</p>
+{% else %}
+<table>
+  <tr><th>Title</th><th>Category</th><th>Published</th><th>Chunks</th></tr>
+  {% for p in papers %}
+  <tr>
+    <td><a href="{{ p.url }}" target="_blank" rel="noopener">{{ p.title }}</a></td>
+    <td class="mono">{{ p.category|join(', ') }}</td>
+    <td>{{ p.published_date or '—' }}</td>
+    <td>{{ p.chunk_count }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+
+<h2>Chunking strategy (A7)</h2>
+<div class="card">
+  <p class="subtitle">
+    The production corpus above always uses the <strong>default</strong> chunking strategy —
+    A7's toggle below is additive and reversible: switching it never re-chunks or migrates
+    the production corpus, it only changes which pre-built corpus <code>/ask</code> and
+    <code>/pipeline</code> query.
+  </p>
+  {% if chunking_comparison %}
+  <table>
+    <tr><th>strategy</th><th>role</th><th>recall@10</th><th>ndcg@10</th><th>chunks</th><th>index MB</th></tr>
+    {% for name, r in chunking_comparison.results.items() %}
+    <tr {% if name == active_chunking_strategy or (chunking_comparison.selection.get(active_chunking_strategy) == name) %}style="background:rgba(110,168,254,0.08);"{% endif %}>
+      <td class="mono">{{ name }}</td>
+      <td>
+        {% for role, strat in chunking_comparison.selection.items() %}
+          {% if strat == name %}<span class="mono">{{ role }}</span>{% endif %}
+        {% endfor %}
+      </td>
+      <td>{{ "%.4f"|format(r["recall@10"]) }}</td>
+      <td>{{ "%.4f"|format(r["ndcg@10"]) }}</td>
+      <td>{{ r.chunk_count }}</td>
+      <td>{{ r.index_mb }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  <form method="post" action="/corpus/chunking-strategy" style="margin-top:1rem;">
+    <label for="strategy">Active strategy: </label>
+    <select name="strategy" id="strategy">
+      <option value="default" {% if active_chunking_strategy == "default" %}selected{% endif %}>default (production)</option>
+      {% for role in chunking_comparison.selection.keys() %}
+      <option value="{{ role }}" {% if active_chunking_strategy == role %}selected{% endif %}>{{ role }} ({{ chunking_comparison.selection[role] }})</option>
+      {% endfor %}
+    </select>
+    <button type="submit">Switch</button>
+  </form>
+  {% else %}
+  <p class="empty-state">The ablation hasn't been run yet — <code>python -m evals.run_chunking_eval --persist</code> builds the comparison table and the winner/median/efficient corpora this toggle switches between.</p>
+  {% endif %}
+</div>
+{% endif %}
+{% endblock %}

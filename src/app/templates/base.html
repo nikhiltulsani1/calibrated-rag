@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Calibrated RAG{% endblock %}</title>
+  <script>
+    // Applied before first paint so there's no flash of the wrong theme.
+    try {
+      var t = localStorage.getItem("theme");
+      if (t) document.documentElement.setAttribute("data-theme", t);
+    } catch (e) {}
+  </script>
+  <link rel="stylesheet" href="/static/css/theme.css">
+  <!-- Exact tag + hash from htmx's own docs (htmx.org/docs) — the
+       previous version of this hash was hand-typed and wrong, which
+       silently blocked the script via SRI with no visible error to a
+       user. Caught by actually clicking through the page in a browser
+       and reading the console, not by inspection. -->
+  <script src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.10/dist/htmx.min.js" integrity="sha384-H5SrcfygHmAuTDZphMHqBJLc3FhssKjG7w/CeCpFReSfwBWDTKpkzPP8c+cLsK+V" crossorigin="anonymous"></script>
+</head>
+<body>
+  <nav>
+    <span class="brand">Calibrated RAG</span>
+    <a href="/ask" class="{{ 'active' if active == 'ask' }}">Ask</a>
+    <a href="/pipeline" class="{{ 'active' if active == 'pipeline' }}">Pipeline</a>
+    <a href="/corpus" class="{{ 'active' if active == 'corpus' }}">Corpus</a>
+    <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Toggle color theme">Auto</button>
+  </nav>
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+  <script>
+    (function () {
+      var btn = document.getElementById("theme-toggle");
+      function label(t) { return t === "dark" ? "Dark" : t === "light" ? "Light" : "Auto"; }
+      function apply(t) {
+        if (t) document.documentElement.setAttribute("data-theme", t);
+        else document.documentElement.removeAttribute("data-theme");
+        btn.textContent = label(t);
+      }
+      var stored = null;
+      try { stored = localStorage.getItem("theme"); } catch (e) {}
+      apply(stored);
+      btn.addEventListener("click", function () {
+        var current = null;
+        try { current = localStorage.getItem("theme"); } catch (e) {}
+        var next = current === "dark" ? "light" : current === "light" ? null : "dark";
+        try {
+          if (next) localStorage.setItem("theme", next);
+          else localStorage.removeItem("theme");
+        } catch (e) {}
+        apply(next);
+      });
+    })();
+  </script>
+</body>
+</html>

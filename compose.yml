@@ -1,0 +1,241 @@
+x-airflow-common: &airflow-common
+  image: apache/airflow:3.3.0-python3.12
+  environment: &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/airflow
+    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY}
+    AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_JWT_SECRET}
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
+  volumes:
+    - ./orchestration/dags:/opt/airflow/dags
+    - airflow_logs:/opt/airflow/logs
+  user: "${AIRFLOW_UID:-50000}:0"
+  depends_on: &airflow-common-depends-on
+    postgres:
+      condition: service_healthy
+  networks: [ragnet]
+
+services:
+
+  # ---------------------------------------------------------------------
+  # Relational store — authoritative for papers, chunks, ingestion state.
+  # Also hosts Airflow's own metadata DB (see infra/postgres/init script).
+  # ---------------------------------------------------------------------
+  postgres:
+    image: postgres:18.6
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      # Postgres 18+ changed convention: the official image now expects
+      # the volume at the PARENT dir (it creates its own major-version
+      # subdirectory beneath it), not directly at .../data as every prior
+      # major version required. Mounting at .../data here made 18.6 refuse
+      # to start — verified by actually running it, not assumed.
+      - postgres_data:/var/lib/postgresql
+      - ./infra/postgres/init-multiple-dbs.sh:/docker-entrypoint-initdb.d/init-multiple-dbs.sh:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [ragnet]
+
+  # ---------------------------------------------------------------------
+  # Hybrid index — lexical field + dense vector field, fused at query time.
+  # Security plugin stays ON (default): dev is not a reason to run an
+  # internet-reachable search engine with no auth.
+  # ---------------------------------------------------------------------
+  opensearch:
+    image: opensearchproject/opensearch:3.8.0
+    environment:
+      discovery.type: single-node
+      OPENSEARCH_INITIAL_ADMIN_PASSWORD: ${OPENSEARCH_ADMIN_PASSWORD}
+      OPENSEARCH_JAVA_OPTS: "-Xms512m -Xmx512m"
+    volumes:
+      - opensearch_data:/usr/share/opensearch/data
+    ports:
+      - "9200:9200"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sk -u admin:$${OPENSEARCH_INITIAL_ADMIN_PASSWORD} https://localhost:9200/_cluster/health | grep -Eq '\"status\":\"(green|yellow)\"'"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+    networks: [ragnet]
+
+  # ---------------------------------------------------------------------
+  # Cut-first per Step 0's documented cut order. Off by default — bring
+  # up explicitly with `docker compose --profile dashboards up`.
+  # ---------------------------------------------------------------------
+  opensearch-dashboards:
+    image: opensearchproject/opensearch-dashboards:3.8.0
+    profiles: ["dashboards"]
+    environment:
+      OPENSEARCH_HOSTS: '["https://opensearch:9200"]'
+      OPENSEARCH_USERNAME: admin
+      OPENSEARCH_PASSWORD: ${OPENSEARCH_ADMIN_PASSWORD}
+      OPENSEARCH_SSL_VERIFICATIONMODE: none
+    ports:
+      - "5601:5601"
+    depends_on:
+      opensearch:
+        condition: service_healthy
+    networks: [ragnet]
+
+  # ---------------------------------------------------------------------
+  # Query plans, response cache, quota counters — hot, expiring, cheap to
+  # lose. No persistence volume: that's the point.
+  # ---------------------------------------------------------------------
+  redis:
+    image: redis:8.10.0-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [ragnet]
+
+  # ---------------------------------------------------------------------
+  # API — the product. Fails to build until Phase 1 app code lands; the
+  # stub in src/app/main.py exists so this service is truthfully testable
+  # today rather than a promise.
+  # ---------------------------------------------------------------------
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file: .env
+    environment:
+      # Override the localhost defaults in relational.py / client.py —
+      # those defaults are correct for host-side testing (venv, outside
+      # the compose network), wrong in-container where localhost means
+      # the api container itself, not its neighbours.
+      POSTGRES_HOST: postgres
+      OPENSEARCH_HOST: opensearch
+      REDIS_HOST: redis
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      opensearch:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      # python:3.12-slim has no curl — verified by running it (State.Health
+      # logged "curl: not found") rather than assumed. Use the interpreter
+      # that's already in the image instead of adding a package for this.
+      #
+      # Points at /readyz, not /health (plan D1) — Docker's healthcheck
+      # (and this container's own real dependency chain, since other
+      # services key off "healthy") wants to know whether this container
+      # can actually serve a real request right now, not just whether
+      # the process happens to be up. urlopen raises HTTPError on
+      # /readyz's real 503 when a dependency is down, which is a
+      # nonzero exit here — exactly what should flip this container to
+      # "unhealthy" instead of silently accepting broken traffic.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/readyz', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    networks: [ragnet]
+
+  # ---------------------------------------------------------------------
+  # Scheduled ingestion — second in the cut order (replace with a manual
+  # ingestion entrypoint if RAM-constrained). Off by default — bring up
+  # explicitly with `docker compose --profile ingestion up`.
+  # ---------------------------------------------------------------------
+  airflow-init:
+    <<: *airflow-common
+    profiles: ["ingestion"]
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        airflow db migrate
+        airflow users create \
+          --username "${AIRFLOW_ADMIN_USER}" \
+          --password "${AIRFLOW_ADMIN_PASSWORD}" \
+          --firstname admin --lastname admin \
+          --role Admin --email admin@example.local || true
+
+  airflow-apiserver:
+    <<: *airflow-common
+    profiles: ["ingestion"]
+    command: api-server
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/api/v2/monitor/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    <<: *airflow-common
+    profiles: ["ingestion"]
+    command: scheduler
+    healthcheck:
+      test: ["CMD-SHELL", "airflow jobs check --job-type SchedulerJob --hostname \"$$(hostname)\""]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-dag-processor:
+    <<: *airflow-common
+    profiles: ["ingestion"]
+    command: dag-processor
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-triggerer:
+    <<: *airflow-common
+    profiles: ["ingestion"]
+    command: triggerer
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  # ---------------------------------------------------------------------
+  # Optional local model runtime — off by default. Hosted inference is
+  # the default per the Models section; this exists so a fully offline
+  # configuration is available and comparable via --sweep.
+  # ---------------------------------------------------------------------
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["local-llm"]
+    volumes:
+      - ollama_models:/root/.ollama
+    ports:
+      - "11434:11434"
+    networks: [ragnet]
+
+networks:
+  ragnet:
+
+volumes:
+  postgres_data:
+  opensearch_data:
+  airflow_logs:
+  ollama_models:

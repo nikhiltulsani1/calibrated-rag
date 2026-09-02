@@ -1,0 +1,46 @@
+{% if error %}
+<div class="card" style="border-left: 3px solid var(--bad);">
+  <strong style="color: var(--bad);">Couldn't complete this request.</strong>
+  <p>{{ error }}</p>
+</div>
+{% elif answer.abstained %}
+<div class="card abstained">
+  {{ answer.text }}
+</div>
+{% else %}
+<div class="card">
+  <p class="answer-text">{{ answer.text }}</p>
+</div>
+
+{% if answer.citations %}
+<h2>Sources</h2>
+{% for c in answer.citations %}
+<div class="card" style="margin-bottom:0.5rem;">
+  <a class="citation" onclick="document.getElementById('cite-{{ loop.index }}').classList.toggle('open')">[{{ loop.index }}]</a>
+  <strong>{{ c.title or "untitled" }}</strong>
+  {% if c.section %}<span class="subtitle"> — {{ c.section }}</span>{% endif %}
+  <div id="cite-{{ loop.index }}" class="citation-detail">
+    <p>{{ c.text }}</p>
+    <div class="mono">chunk_id: {{ c.chunk_id }}</div>
+    <div class="mono">paper_id: {{ c.paper_id }}</div>
+  </div>
+</div>
+{% endfor %}
+{% endif %}
+{% endif %}
+
+{% if guardrail_notes %}
+<p class="subtitle">{{ guardrail_notes }}</p>
+{% endif %}
+
+{% if cache_hit %}
+<p class="subtitle">Served from cache — an identical question, answered moments ago.</p>
+{% endif %}
+
+{% if run_id %}
+<p><a href="/pipeline?run_id={{ run_id }}">how did I get this? →</a></p>
+{% endif %}
+
+{% if request_id %}
+<p class="mono subtitle">request id: {{ request_id }}</p>
+{% endif %}

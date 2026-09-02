@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Ask — Calibrated RAG{% endblock %}
+{% block content %}
+<h1>Ask</h1>
+<p class="subtitle">Ask a question about the ingested arXiv corpus.</p>
+
+<form class="ask-form" method="post" action="/ask" hx-post="/ask" hx-target="#result" hx-indicator="#spinner">
+  <input type="text" name="query" placeholder="e.g. what is RLHF?" autocomplete="off" required maxlength="2000">
+  <button type="submit">Ask</button>
+</form>
+<p id="spinner" class="htmx-indicator subtitle">Planning → searching → reranking → writing…</p>
+
+<div id="result">
+  <p class="subtitle">Ask something to see an answer here, with citations you can expand.</p>
+</div>
+{% endblock %}

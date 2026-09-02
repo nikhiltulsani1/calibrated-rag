@@ -1,0 +1,54 @@
+{
+  "results": {
+    "fixed_no_overlap": {
+      "chunk_count": 541,
+      "embed_calls_made": 541,
+      "embed_calls_reused": 0,
+      "index_mb": 2.94,
+      "recall@10": 1.0,
+      "ndcg@10": 0.9923356600904316,
+      "index_name": "rag_chunks_ablation_fixed_no_overlap"
+    },
+    "fixed_overlap": {
+      "chunk_count": 571,
+      "embed_calls_made": 0,
+      "embed_calls_reused": 571,
+      "index_mb": 3.1,
+      "recall@10": 1.0,
+      "ndcg@10": 0.9923356600904316,
+      "index_name": "rag_chunks_ablation_fixed_overlap"
+    },
+    "recursive_separator": {
+      "chunk_count": 555,
+      "embed_calls_made": 555,
+      "embed_calls_reused": 0,
+      "index_mb": 2.98,
+      "recall@10": 1.0,
+      "ndcg@10": 0.9919525898388504,
+      "index_name": "rag_chunks_ablation_recursive_separator"
+    },
+    "structure_aware": {
+      "chunk_count": 571,
+      "embed_calls_made": 571,
+      "embed_calls_reused": 0,
+      "index_mb": 3.06,
+      "recall@10": 1.0,
+      "ndcg@10": 0.9923356600904316,
+      "index_name": "rag_chunks_ablation_structure_aware"
+    },
+    "semantic": {
+      "chunk_count": 2932,
+      "embed_calls_made": 2932,
+      "embed_calls_reused": 0,
+      "index_mb": 13.19,
+      "recall@10": 1.0,
+      "ndcg@10": 0.9916666666666668,
+      "index_name": "rag_chunks_ablation_semantic"
+    }
+  },
+  "selection": {
+    "winner": "fixed_no_overlap",
+    "median": "structure_aware",
+    "efficient": "fixed_no_overlap"
+  }
+}

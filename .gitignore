@@ -1,0 +1,19 @@
+.env
+# Real, live credentials sitting at repo root — never committed.
+JinaAPIKey.txt
+backupKey.txt
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.coverage
+htmlcov/
+# A6: cached corpus tiers, not committed. datasets/ and baselines/ ARE
+# committed (gold sets, qrels, accepted runs) — do not add them here.
+evals/corpora/*
+!evals/corpora/.gitkeep
+
+# R3: real Postgres backup dumps — a real credentials-bearing DB export,
+# never committed.
+backups/*
+!backups/.gitkeep

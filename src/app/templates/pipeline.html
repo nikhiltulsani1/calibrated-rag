@@ -1,0 +1,183 @@
+{% extends "base.html" %}
+{% block title %}Pipeline — Calibrated RAG{% endblock %}
+{% block content %}
+<h1>Pipeline</h1>
+<p class="subtitle">Every panel below is real data from an actual query run, not a scripted animation — either just now, or replayed from a saved run below.</p>
+
+<form class="ask-form" method="get" action="/pipeline" hx-get="/pipeline" hx-target="body" hx-push-url="true">
+  <input type="text" name="query" placeholder="e.g. what is RLHF?" value="{{ query or '' }}" autocomplete="off" maxlength="2000">
+  <button type="submit">Run</button>
+</form>
+
+{% if error %}
+<div class="card" style="border-left: 3px solid var(--bad);">
+  <strong style="color: var(--bad);">Couldn't complete this request.</strong>
+  <p>{{ error }}</p>
+</div>
+{% elif not trace %}
+<p class="empty-state">Run a query above to see how it flows through the pipeline, stage by stage.</p>
+{% else %}
+
+{% if replayed %}
+<div class="card" style="border-left: 3px solid var(--accent);">
+  <strong>Replaying a saved run</strong>
+  <p class="subtitle">This is the exact trace from when it originally ran — not a fresh query. Retrieval, reranking, and generation are all non-deterministic across runs, so re-asking the same question live can legitimately produce a different result than this.</p>
+</div>
+{% elif run_id %}
+<p class="subtitle">Saved — <a href="/pipeline?run_id={{ run_id }}">permalink to replay this exact run later</a>.</p>
+{% endif %}
+
+{% if trace.chunking_strategy and trace.chunking_strategy != "default" %}
+<p class="subtitle">Answered from the <strong class="mono">{{ trace.chunking_strategy }}</strong> chunking-strategy corpus (A7 toggle), not the default production corpus — <a href="/corpus">switch it back on the Corpus page</a>.</p>
+{% endif %}
+
+<div class="stage">
+  <div class="stage-header"><span>1. Raw query</span></div>
+  <div class="stage-body mono">{{ trace.original_query }}</div>
+</div>
+
+<div class="stage {% if trace.stopped_at == 'size_and_shape' %}stopped-here{% endif %}">
+  <div class="stage-header"><span>0. Size &amp; shape guardrail</span>
+    <span class="badge {{ 'fail' if trace.stopped_at == 'size_and_shape' else 'pass' }}">{{ 'BLOCKED' if trace.stopped_at == 'size_and_shape' else 'passed' }}</span>
+  </div>
+  {% if trace.stopped_at == 'size_and_shape' %}<div class="stage-body">Query rejected before the query planner ever ran.</div>{% endif %}
+</div>
+
+<div class="stage {% if not trace.query_plan %}skipped{% endif %} {% if trace.stopped_at == 'scope_screening' %}stopped-here{% endif %}">
+  <div class="stage-header"><span>2. Query plan</span>
+    {% if trace.query_plan %}
+    <span class="badge {{ 'fail' if trace.stopped_at == 'scope_screening' else 'pass' }}">intent: {{ trace.query_plan.intent }}</span>
+    {% if trace.query_plan.degraded %}<span class="badge degraded">degraded — unrewritten</span>{% endif %}
+    {% endif %}
+  </div>
+  {% if trace.query_plan %}
+  <div class="stage-body">
+    {% if trace.query_plan.degraded %}
+    <p class="subtitle">Rewriting failed after retries, so this is the raw question searched as-is — no normalization, no expansions. Reason: <span class="mono">{{ trace.query_plan.degrade_reason }}</span></p>
+    {% endif %}
+    <p><strong>Normalized:</strong> {{ trace.query_plan.normalized }}</p>
+    {% if trace.query_plan.expansions %}
+    <p><strong>Expansions:</strong></p>
+    <ul>{% for e in trace.query_plan.expansions %}<li>{{ e }}</li>{% endfor %}</ul>
+    {% endif %}
+    {% if trace.query_plan.filters %}<p><strong>Filters:</strong> <span class="mono">{{ trace.query_plan.filters }}</span></p>{% endif %}
+    {% if trace.stopped_at == 'scope_screening' %}<p class="badge fail">out_of_scope — nothing downstream ran</p>{% endif %}
+  </div>
+  {% else %}
+  <div class="stage-body">Not reached.</div>
+  {% endif %}
+</div>
+
+<div class="stage skipped">
+  <div class="stage-header"><span>3. Embedding → 2D corpus map</span><span class="badge degraded">not available yet</span></div>
+  <div class="stage-body">Needs a real embedded corpus (JINA_API_KEY not configured on this machine) and an offline 2D projection of the corpus, computed once at index time — see the plan's A5 spec. Not faked here.</div>
+</div>
+
+<div class="stage {% if not trace.fusion %}skipped{% endif %}">
+  <div class="stage-header"><span>4. Parallel recall</span>{% if trace.fusion %}<span class="badge pass">{{ trace.fusion.arms|length }} arm(s)</span>{% endif %}</div>
+  {% if trace.fusion and trace.fusion.arms %}
+  <div class="stage-body">
+    <table>
+      <tr><th class="rank-col">#</th><th>Variant</th><th>Arm</th><th>Top hit</th></tr>
+      {% for arm in trace.fusion.arms %}
+      <tr>
+        <td class="rank-col">{{ loop.index }}</td>
+        <td>{{ arm.variant }}</td>
+        <td class="{{ 'arm-lexical' if arm.arm == 'lexical' else 'arm-dense' }}">{{ arm.arm }}</td>
+        <td class="mono">{{ arm.ranked_ids[0] if arm.ranked_ids else '(no hits)' }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+  </div>
+  {% else %}
+  <div class="stage-body">Not reached.</div>
+  {% endif %}
+</div>
+
+<div class="stage {% if not trace.fusion %}skipped{% endif %}">
+  <div class="stage-header"><span>5. RRF fusion (k=60)</span></div>
+  {% if trace.fusion and trace.fusion.fused_order %}
+  <div class="stage-body">
+    <table>
+      <tr><th class="rank-col">Rank</th><th>Chunk</th><th>RRF score</th></tr>
+      {% for doc_id in trace.fusion.fused_order[:10] %}
+      <tr><td class="rank-col">{{ loop.index }}</td><td class="mono">{{ doc_id }}</td><td>{{ "%.4f"|format(trace.fusion.fused_scores[doc_id]) }}</td></tr>
+      {% endfor %}
+    </table>
+  </div>
+  {% else %}
+  <div class="stage-body">Not reached.</div>
+  {% endif %}
+</div>
+
+<div class="stage {% if not trace.reranked %}skipped{% endif %}">
+  <div class="stage-header"><span>6. Rerank</span>
+    {% if trace.reranked %}<span class="badge {{ 'degraded' if trace.reranked.degraded else 'pass' }}">{{ 'degraded: ' + trace.reranked.reason if trace.reranked.degraded else trace.reranked.model_served }}</span>{% endif %}
+  </div>
+  {% if trace.reranked %}
+  <div class="stage-body">
+    <table>
+      <tr><th class="rank-col">Old rank</th><th class="rank-col">New rank</th><th>Chunk</th><th>Score</th></tr>
+      {% for item in trace.reranked|reranked_items %}
+      {% set old_rank = trace.fusion.fused_order.index(item.id) + 1 if trace.fusion and item.id in trace.fusion.fused_order else '?' %}
+      <tr>
+        <td class="rank-col">{{ old_rank }}</td>
+        <td class="rank-col">{{ loop.index }}</td>
+        <td class="mono">{{ item.id }}</td>
+        <td>{{ "%.4f"|format(item.score) if item.score is not none else "—" }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+  </div>
+  {% else %}
+  <div class="stage-body">Not reached.</div>
+  {% endif %}
+</div>
+
+<div class="stage {% if not trace.reranked %}skipped{% endif %}">
+  <div class="stage-header"><span>7. Context assembly</span>{% if trace.reranked %}<span class="badge pass">{{ (trace.reranked|reranked_items)|length }} chunks, ~{{ context_word_estimate }} words</span>{% endif %}</div>
+  {% if trace.reranked %}
+  <div class="stage-body">
+    {% for item in trace.reranked|reranked_items %}
+    <p class="mono">[{{ loop.index }}] {{ trace.metadata.get(item.id, {}).get('title', 'unknown') }} — {{ item.text[:80] }}…</p>
+    {% endfor %}
+    <p class="subtitle">Word count shown, not a real tokenizer count — no token-counting dependency wired in yet.</p>
+  </div>
+  {% else %}
+  <div class="stage-body">Not reached.</div>
+  {% endif %}
+</div>
+
+<div class="stage {% if not trace.answer or trace.stopped_at %}skipped{% endif %}">
+  <div class="stage-header"><span>8. Generation</span>{% if trace.answer %}<span class="badge {{ 'fail' if trace.answer.abstained else 'pass' }}">{{ 'declined' if trace.answer.abstained else (trace.answer.citations|length ~ ' citation(s)') }}</span>{% endif %}</div>
+  {% if trace.answer %}
+  <div class="stage-body">
+    <p class="{{ 'abstained' if trace.answer.abstained }}">{{ trace.answer.text }}</p>
+  </div>
+  {% else %}
+  <div class="stage-body">Not reached.</div>
+  {% endif %}
+</div>
+
+{% if trace.attempts and trace.attempts|length > 1 %}
+<div class="stage">
+  <div class="stage-header"><span>9. Self-correction</span><span class="badge degraded">retried {{ trace.attempts|length - 1 }}×</span></div>
+  <div class="stage-body">
+    <p class="subtitle">The first attempt abstained or came back ungrounded, so the pipeline automatically widened the context window and tried again — this is not a scripted retry, it's the same guardrail signals from stage 8 deciding live.</p>
+    <table>
+      <tr><th class="rank-col">#</th><th>Context size</th><th>Grounded?</th><th>Outcome</th></tr>
+      {% for a in trace.attempts %}
+      <tr>
+        <td class="rank-col">{{ a.attempt }}</td>
+        <td>{{ a.top_n_context }} chunks</td>
+        <td><span class="badge {{ 'pass' if a.groundedness_passed else 'fail' }}">{{ 'yes' if a.groundedness_passed else 'no' }}</span></td>
+        <td>{{ 'abstained' if a.answer.abstained else (a.answer.citations|length ~ ' citation(s)') }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+  </div>
+</div>
+{% endif %}
+
+{% endif %}
+{% endblock %}

@@ -1,0 +1,101 @@
+# The only place a model id appears — call sites ask get_model(role) for
+# a role, never a model id directly. See "Switching models" in the plan.
+#
+# judge's ladder was added when the component that calls it was built
+# (A4's eval harness) — writing an unverified ladder for a role nothing
+# calls yet would encode a guess as if it were a checked fact.
+roles:
+  embed: jina:jina-embeddings-v3   # no ladder — see the embed no-fallback rule in A0
+
+  # Quality role -> 100B+ first (see "Why rewrite and grade do not start
+  # at 100B+" — that reasoning explicitly does NOT apply here: generate
+  # fires once per answer, not once per document, so latency/quota cost
+  # is low and quality is what's worth paying for).
+  #
+  # gpt-oss-120b verified active on Groq's free tier (not deprecated, not
+  # assumed just because the smaller gpt-oss-20b sibling was already
+  # verified) — but it has its OWN, tighter limit than the general
+  # 14,400 req/day headline figure quoted elsewhere in this project:
+  # 1,000 req/day, 30 RPM, 8,000 TPM (verified Aug 2026). Fine for a
+  # once-per-answer role; would not be fine for rewrite/grade's fan-out.
+  # Rung 1 was openrouter:deepseek/deepseek-chat-v3:free — confirmed dead
+  # (404) 2026-08-20: OpenRouter no longer serves it free, "use this slug
+  # instead: deepseek/deepseek-chat-v3" (the paid version). Replaced with
+  # openai/gpt-oss-20b:free, verified live the same day — real answers
+  # produced through the full pipeline, not just a ping. Not the same
+  # judge-separation concern as rewrite/grade sharing this model: that
+  # rule is specifically about generate vs. judge, and this rung is
+  # generate's own fallback, never active in the judge ladder.
+  #
+  # Also verified live 2026-08-20: OpenRouter's free tier caps at 50
+  # requests/day ACCOUNT-WIDE across every :free model combined (not
+  # per-model) — real error body: "Rate limit exceeded: free-models-
+  # per-day... Add 10 credits to unlock 1000 free model requests/day."
+  # A burst of real usage against this rung can hit that ceiling fast.
+  generate:
+    - groq:openai/gpt-oss-120b
+    - openrouter:openai/gpt-oss-20b:free
+
+  # A1, latency-critical: fires on every query before OpenSearch is ever
+  # touched, so a small/fast model wins over a large one here (see "Why
+  # rewrite and grade do not start at 100B+" in the plan).
+  #
+  # groq:llama-3.1-8b-instant was the plan's original example rung — it
+  # was deprecated by Groq on 2026-06-17. Verified the live replacement
+  # via GroqDocs rather than carry the dead slug forward.
+  #
+  # Rung 1 was originally openrouter:meta-llama/llama-3.1-8b-instruct:free
+  # — confirmed dead (404, not in OpenRouter's live /models catalog) on
+  # 2026-08-16, discovered only once query_planner.py actually started
+  # using ladder descent for real (get_model_ladder + retry-with-fallback,
+  # see that file) and every retry hit the dead slug. Replaced with
+  # google/gemma-4-26b-a4b-it:free after live-testing 4 free-tier
+  # candidates against the two real queries that were failing on rung 0
+  # (openai/gpt-oss-20b via Groq drops the required "intent" field on a
+  # meaningful fraction of calls — a model-level trait, reproduced via
+  # the *same* model served by OpenRouter too, not a Groq-specific
+  # infra quirk): liquid/lfm-2.5-2.6b:free ignored the schema entirely
+  # (wrong JSON shape), nvidia/nemotron-3-nano-30b-a3b:free returned
+  # empty/malformed JSON, openai/gpt-oss-20b:free (OpenRouter) partially
+  # helped but reproduced rung 0's exact failure on one of the two test
+  # queries (same weights, same trait). Gemma succeeded on both. Also
+  # architecturally distinct from gpt-oss (rung 0) and from the judge
+  # role's nemotron-3-ultra-550b-a55b, so it doesn't brush against the
+  # judge-separation rule even by family.
+  rewrite:
+    - groq:openai/gpt-oss-20b
+    - openrouter:google/gemma-4-26b-a4b-it:free
+
+  # The agentic loop's new pre-generation context_sufficiency guardrail
+  # (src/reason/nodes/assess.py) — called once per attempt, only on the
+  # rare occasion the deterministic overlap check is inconclusive, so
+  # its cost/latency profile matches rewrite's fan-out case far more
+  # than generate's once-per-answer case. Bound to the exact same
+  # ladder as rewrite (same rationale: small/fast wins here), per the
+  # plan's own "Document grading (agentic): Same as rewriter" rationale.
+  grade:
+    - groq:openai/gpt-oss-20b
+    - openrouter:google/gemma-4-26b-a4b-it:free
+
+  # A2, same vendor as embed — no second key. Single-rung deliberately:
+  # the "fallback" for this role isn't a ladder rung, it's the separate
+  # RERANKER_BACKEND=local escape hatch (see A2), which bypasses the role
+  # registry entirely rather than being another provider:model string here.
+  #
+  # jina-reranker-v3 was superseded by v3.5 (verified via Jina's own model
+  # page: faster, better on structured/legal/medical retrieval, explicitly
+  # a drop-in replacement, no API changes) — bound to the current one
+  # rather than the version named in earlier drafts of this plan.
+  rerank: jina:jina-reranker-v3.5
+
+  # Guardrails' output-side groundedness check (see the plan's Guardrails
+  # section): the deterministic overlap check handles the common case,
+  # this is the escalation path for the rare "still unsure" case. Bound
+  # to NVIDIA — a provider that appears nowhere in generate/rewrite's
+  # ladders (both Groq+OpenRouter) — so the judge-separation rule (no
+  # model anywhere in the judge ladder may appear in any generation
+  # ladder) holds structurally, not just by convention. Single-rung,
+  # commented per the plan's rule that any single-rung role must justify
+  # itself or `doctor` should flag it — a second rung needs verifying yet
+  # another provider's endpoint, deferred rather than guessed.
+  judge: nvidia:nvidia/nemotron-3-ultra-550b-a55b

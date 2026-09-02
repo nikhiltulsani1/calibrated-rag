@@ -1,0 +1,15 @@
+# Stands in for the setup-models discovery tool's output until that tool
+# exists. Hand-set now against the A0 recommendation (1024 dims,
+# MRL-capable, float32 to start); setup-models will regenerate this file
+# at Step 0b and it becomes machine-written from there, with `doctor`
+# re-validating it on every build.
+#
+# Dimension is a one-way door (see A0) — changing this value after any
+# vector has been written is a re-embed + re-index migration, not a
+# config edit.
+embed:
+  provider: jina
+  model: jina-embeddings-v3
+  dimension: 1024
+  mrl_capable: true
+  locked_at: "2026-08-15"

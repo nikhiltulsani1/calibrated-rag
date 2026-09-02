@@ -1,0 +1,25 @@
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pyyaml==6.0.3
+httpx==0.28.1
+SQLAlchemy==2.0.52
+psycopg[binary]==3.2.3
+opensearch-py==3.2.0
+pydantic==2.13.4
+redis==8.1.0
+pymupdf==1.28.2
+opentelemetry-api==1.41.0
+opentelemetry-sdk==1.41.0
+opentelemetry-exporter-otlp-proto-http==1.41.0
+jinja2==3.1.6
+python-multipart==0.0.22
+
+# Not required at import time by any src/ module — only used by the A2
+# RERANKER_BACKEND=local escape hatch. Enabled 2026-08-22 after Jina's
+# hosted reranker went down repeatedly (real, recurring account-balance
+# exhaustion — see Results.md) and directly blocked a real fix
+# verification (B1's u018 check couldn't even see the right passage
+# because the un-reranked fallback left context in raw RRF-fusion order,
+# not because B1 itself was wrong). Real, current version, verified
+# against PyPI's own index, not guessed.
+sentence-transformers==6.0.0

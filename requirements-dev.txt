@@ -1,0 +1,24 @@
+-r requirements.txt
+
+pytest==9.1.1
+pytest-cov==7.1.0
+python-dotenv==1.2.2
+
+# R6 threat-model closure — both manually runnable today, neither needs
+# R1's CI to exist first. pre-commit: `pre-commit install` once, then
+# .pre-commit-config.yaml's detect-secrets hook runs on every commit.
+# pip-audit: `python -m pip_audit -r requirements.txt` scans against the
+# OSV vulnerability database, no account needed.
+pre-commit==4.0.1
+pip-audit==2.7.3
+
+# A4 generation-quality eval (faithfulness/answer_relevancy/context_precision/
+# context_recall) — evals/run_generation_eval.py only, never imported by src/.
+# ragas 0.4.3 hard-imports langchain_community.chat_models.vertexai, a module
+# langchain-community removed in its own 0.4.x line (verified live 2026-08-16
+# — the import fails even with langchain-google-vertexai installed, since
+# that package doesn't restore the old deprecated shim path). Pinning
+# langchain-community<0.4 is the actual fix, not a version guess.
+ragas==0.4.3
+langchain-community==0.3.31
+openai==2.54.0
