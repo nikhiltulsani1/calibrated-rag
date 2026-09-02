@@ -9,12 +9,49 @@ from sqlalchemy.dialects.postgresql import JSONB
 
 from src.index.embed_toggle import get_active_embed_provider
 from src.index.embedder import embed_queries
+from src.platform.cache import get_json, set_json
 from src.platform.telemetry import get_tracer, run_with_otel_context
 from src.retrieve.hybrid import ArmResult, FusionTrace, rrf_fuse_with_scores
 from src.retrieve.reranker import Candidate
 from src.schemas.query_plan import QueryPlan
 from src.store.relational import get_session
 from src.store.schema import Chunk, Paper
+
+# Real bug found live during the Render deploy check: graph.py's
+# hallucinated-category guard (added earlier this session — see
+# project-docs/result.md §23) unconditionally called hybrid.py's
+# OpenSearch-backed real_categories(), which crashed with
+# KeyError('OPENSEARCH_ADMIN_PASSWORD') on RETRIEVAL_BACKEND=postgres
+# deployments that have no OpenSearch at all. This is the Postgres
+# counterpart, same cache key prefix/TTL discipline as the OpenSearch
+# version, so both share Redis without colliding.
+_VALID_CATEGORIES_CACHE_PREFIX = "retrieval:valid_categories:postgres"
+_VALID_CATEGORIES_TTL_SECONDS = 24 * 60 * 60
+
+
+def real_categories() -> set[str]:
+    """The real, distinct `category` values actually present in the
+    shared corpus right now — `category` is a JSON array per paper
+    (e.g. ["cs.IR", "cs.CL"]), so this flattens across all papers in
+    Python rather than a more elaborate SQL unnest, since the corpus
+    size here is small enough that this is genuinely simpler and just
+    as fast. Cached 24h, same discipline as the OpenSearch version.
+    """
+    cached = get_json(_VALID_CATEGORIES_CACHE_PREFIX)
+    if cached is not None:
+        return set(cached)
+
+    session = get_session()
+    try:
+        rows = session.execute(select(Paper.category)).all()
+    finally:
+        session.close()
+    categories: set[str] = set()
+    for (cats,) in rows:
+        if cats:
+            categories.update(cats)
+    set_json(_VALID_CATEGORIES_CACHE_PREFIX, sorted(categories), _VALID_CATEGORIES_TTL_SECONDS)
+    return categories
 
 # Phase 2 — the RETRIEVAL_BACKEND=postgres path, used only by the
 # free-tier live deployment (src/reason/nodes/retrieve.py picks this

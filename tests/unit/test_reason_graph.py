@@ -191,6 +191,38 @@ def test_real_categories_are_fetched_and_passed_into_plan_query(monkeypatch):
     mock_plan_query.assert_called_once_with("what is RLHF", known_categories=frozenset({"cs.CL", "cs.IR"}))
 
 
+def test_real_categories_dispatch_to_postgres_backend_when_configured(monkeypatch):
+    # Real bug found live during the Render deploy check: this call used
+    # to unconditionally hit hybrid.py's OpenSearch-backed
+    # real_categories(get_client(), index_name), crashing with
+    # KeyError('OPENSEARCH_ADMIN_PASSWORD') on RETRIEVAL_BACKEND=postgres
+    # deployments — this confirms it now uses the Postgres-backed
+    # counterpart instead, and never touches src.reason.graph.get_client
+    # at all on that path.
+    monkeypatch.setenv("RETRIEVAL_BACKEND", "postgres")
+    monkeypatch.delenv("GUARDRAIL_GROUNDEDNESS_MODE", raising=False)
+    plan = QueryPlan(original="q", normalized="q", intent="factual")
+    fake_answer = Answer(text="the answer", citations=[], abstained=False)
+    grounded_pass = GuardrailResult("groundedness", True, reason="overlap=1.00")
+
+    with patch("src.retrieve.hybrid_postgres.real_categories", return_value={"cs.AI"}) as mock_pg_categories, patch(
+        "src.reason.graph.get_client", side_effect=AssertionError("OpenSearch must not be touched on the postgres backend")
+    ), patch("src.reason.graph.plan_query", return_value=plan) as mock_plan_query, patch(
+        "src.reason.graph.run_retrieve", return_value=([], _EMPTY_FUSION)
+    ), patch(
+        "src.reason.graph.run_rerank_and_metadata",
+        return_value=(RerankResult(items=[], degraded=False, reason=None, model_served=None), {}),
+    ), patch(
+        "src.reason.graph.assess_context", return_value=_SUFFICIENT
+    ), patch(
+        "src.reason.graph.run_answer", return_value=(fake_answer, GuardrailResult("citation_integrity", True), grounded_pass)
+    ):
+        run_traced_query("what is RLHF")
+
+    mock_pg_categories.assert_called_once()
+    mock_plan_query.assert_called_once_with("what is RLHF", known_categories=frozenset({"cs.AI"}))
+
+
 def test_answer_query_returns_just_the_final_answer():
     plan = QueryPlan(original="q", normalized="q", intent="out_of_scope")
     with patch("src.reason.graph.plan_query", return_value=plan), patch.dict(

@@ -107,14 +107,27 @@ def run_graph(query: str, *, top_n_context: int = 8) -> StageTrace:
 
         with _timed(timings, "plan_query"):
             # Real corpus categories, fetched here (not inside plan_query
-            # itself, which stays free of any OpenSearch dependency — see
-            # _build_system_prompt's docstring) so the rewrite LLM can be
-            # told what a real category actually is, closing the
-            # hallucinated-category gap at its source rather than only
-            # downstream in hybrid.py's _sanitize_filters. Redis-cached
-            # 24h inside real_categories itself, so this adds one cheap
-            # cache lookup per call, not a real OpenSearch round-trip.
-            known_categories = frozenset(real_categories(get_client(), index_name))
+            # itself, which stays free of any OpenSearch/Postgres
+            # dependency — see _build_system_prompt's docstring) so the
+            # rewrite LLM can be told what a real category actually is,
+            # closing the hallucinated-category gap at its source rather
+            # than only downstream in hybrid.py's _sanitize_filters.
+            # Redis-cached 24h inside real_categories itself, so this
+            # adds one cheap cache lookup per call, not a real round-trip
+            # on every request.
+            #
+            # Real bug found live during the Render deploy check: this
+            # used to call hybrid.py's OpenSearch-backed real_categories
+            # unconditionally, crashing with
+            # KeyError('OPENSEARCH_ADMIN_PASSWORD') on
+            # RETRIEVAL_BACKEND=postgres deployments — dispatches the
+            # same way src/reason/nodes/retrieve.py already does.
+            if os.environ.get("RETRIEVAL_BACKEND", "opensearch") == "postgres":
+                from src.retrieve.hybrid_postgres import real_categories as real_categories_postgres
+
+                known_categories = frozenset(real_categories_postgres())
+            else:
+                known_categories = frozenset(real_categories(get_client(), index_name))
             plan = plan_query(query, known_categories=known_categories)
         span.set_attribute("reason.intent", plan.intent)
         span.set_attribute("reason.query_plan_degraded", plan.degraded)
