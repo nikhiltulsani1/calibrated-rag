@@ -74,3 +74,55 @@ def test_save_and_load_run_round_trips_real_shapes(session):
 
 def test_load_run_returns_none_for_unknown_id(session):
     assert load_run(session, "00000000-0000-0000-0000-000000000000") is None
+
+
+# ---------------------------------------------------------------------
+# Phase 2 §5 (stage 6, uploads): a run made against a private upload must
+# only replay for the same session that made it — a guessed/shared
+# run_id from a different visitor's session must not become a real
+# cross-visitor data-exposure vector. See hybrid_postgres.py's
+# _owner_predicate for the identical rule applied to retrieval itself.
+# ---------------------------------------------------------------------
+
+
+def test_owner_scoped_run_loads_for_the_owning_session(session):
+    trace = _real_trace()
+    run_id = save_run(session, trace, owner_session_id="visitor-a")
+
+    loaded = load_run(session, run_id, requester_session_id="visitor-a")
+
+    assert loaded is not None
+    assert loaded["original_query"] == "what is RLHF"
+
+    session.delete(session.get(Run, run_id))
+    session.commit()
+
+
+def test_owner_scoped_run_is_invisible_to_a_different_session(session):
+    trace = _real_trace()
+    run_id = save_run(session, trace, owner_session_id="visitor-a")
+
+    # A different visitor (or an anonymous requester with no session at
+    # all) must not be able to replay this run, even with the exact
+    # run_id — indistinguishable from "no such run", not a distinct
+    # "forbidden" response.
+    assert load_run(session, run_id, requester_session_id="visitor-b") is None
+    assert load_run(session, run_id) is None
+
+    session.delete(session.get(Run, run_id))
+    session.commit()
+
+
+def test_unowned_run_is_visible_to_every_requester(session):
+    # NULL owner (the default OpenSearch path, and any postgres-path run
+    # against only the shared corpus) — today's "anyone can replay any
+    # run_id" behavior must be unchanged.
+    trace = _real_trace()
+    run_id = save_run(session, trace)
+
+    assert load_run(session, run_id, requester_session_id="visitor-a") is not None
+    assert load_run(session, run_id, requester_session_id="visitor-b") is not None
+    assert load_run(session, run_id) is not None
+
+    session.delete(session.get(Run, run_id))
+    session.commit()

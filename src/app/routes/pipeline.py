@@ -1,3 +1,5 @@
+import os
+
 from fastapi import APIRouter, Depends, Request
 
 from src.app.deps import templates
@@ -11,6 +13,10 @@ from src.store.runs import load_run, save_run
 router = APIRouter()
 
 
+def _is_postgres_backend() -> bool:
+    return os.environ.get("RETRIEVAL_BACKEND", "opensearch") == "postgres"
+
+
 @router.get("/pipeline", dependencies=[Depends(enforce_rate_limit)])
 def pipeline_page(request: Request, query: str | None = None, run_id: str | None = None):
     trace = None
@@ -18,11 +24,17 @@ def pipeline_page(request: Request, query: str | None = None, run_id: str | None
     context_word_estimate = 0
     replayed = bool(run_id)
     saved_run_id = None
+    session_id = request.state.session_id if _is_postgres_backend() else None
 
     if run_id:
         session = get_session()
         try:
-            trace = load_run(session, run_id)
+            # Phase 2 §5: a run made against a private upload only replays
+            # for the same session that made it — load_run() itself
+            # enforces this (returns None indistinguishably from "no such
+            # run_id" rather than a distinct 403, so a caller can't even
+            # confirm the id exists), not a check bolted on here.
+            trace = load_run(session, run_id, requester_session_id=session_id)
             if trace is None:
                 error = f"No saved run for id {run_id!r} — it may predate this feature, or the id is wrong."
             elif trace.get("reranked"):
@@ -42,7 +54,7 @@ def pipeline_page(request: Request, query: str | None = None, run_id: str | None
             # now: a read failure is just a miss, a write failure just
             # means this trace wasn't cached.
             try:
-                cached = get_cached_trace(query)
+                cached = get_cached_trace(query, session_id=session_id)
             except Exception:
                 cached = None
             if cached is not None:
@@ -59,12 +71,12 @@ def pipeline_page(request: Request, query: str | None = None, run_id: str | None
                 if trace.get("reranked"):
                     context_word_estimate = sum(len(item["text"].split()) for item in trace["reranked"]["items"])
             else:
-                trace = run_traced_query(query)
+                trace = run_traced_query(query, session_id=session_id)
                 if trace.reranked:
                     context_word_estimate = sum(len(item.text.split()) for item in trace.reranked.items)
                 session = get_session()
                 try:
-                    saved_run_id = save_run(session, trace)
+                    saved_run_id = save_run(session, trace, owner_session_id=session_id)
                 except Exception:
                     # Same "nice-to-have, not the answer itself" rule as /ask
                     # — a save failure must not turn a working trace into an
@@ -73,7 +85,7 @@ def pipeline_page(request: Request, query: str | None = None, run_id: str | None
                 finally:
                     session.close()
                 try:
-                    set_cached_trace(query, trace)
+                    set_cached_trace(query, trace, session_id=session_id)
                 except Exception:
                     pass
         except Exception as exc:

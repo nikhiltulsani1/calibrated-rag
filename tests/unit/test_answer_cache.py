@@ -140,3 +140,76 @@ def test_set_cached_trace_caches_normally_when_provider_matches():
     with patch("src.reason.answer_cache.set_json") as mock_set:
         set_cached_trace("what is RLHF", trace)
     mock_set.assert_called_once()
+
+
+# ---------------------------------------------------------------------
+# Phase 2 (stage 6, uploads) — real cross-visitor leak found while wiring
+# up private uploads: this cache is one shared Redis keyspace with no
+# privacy dimension before session_id was added to the key. A
+# session-scoped answer (one that may cite a visitor's own private
+# upload) cached under the plain query text would be served verbatim to
+# a different visitor asking the identical question — exactly the class
+# of bug the Phase 2 plan's multi-visitor isolation test exists to catch.
+# ---------------------------------------------------------------------
+
+
+def test_cache_key_varies_by_session_id():
+    key_no_session = _cache_key("what is RLHF")
+    key_session_a = _cache_key("what is RLHF", session_id="visitor-a")
+    key_session_b = _cache_key("what is RLHF", session_id="visitor-b")
+    assert len({key_no_session, key_session_a, key_session_b}) == 3
+
+
+def test_set_cached_trace_still_skips_on_a_real_mismatch_on_the_opensearch_path(monkeypatch):
+    monkeypatch.delenv("RETRIEVAL_BACKEND", raising=False)
+    trace = _FakeTrace(
+        original_query="what is RLHF", answer_text="RLHF is...", fusion=_FakeFusion(dense_index_name="rag_chunks_mistral_embed")
+    )
+    with patch("src.reason.answer_cache.set_json") as mock_set:
+        set_cached_trace("what is RLHF", trace)
+    mock_set.assert_not_called()
+
+
+def test_set_cached_trace_caches_on_the_postgres_backend_despite_a_non_opensearch_index_name(monkeypatch):
+    # Real bug found in review (Phase 2, stage 6): this guard was written
+    # for hybrid.py's OpenSearch-only embed-provider-fallback case (see
+    # its own docstring) and compares against provider_to_index(), which
+    # only ever returns an OpenSearch index name. hybrid_postgres.py
+    # always sets dense_index_name="postgres:chunks", which can never
+    # equal an OpenSearch index name — so, ungated, this `return` fired
+    # on EVERY postgres-backend query, silently disabling the answer
+    # cache entirely on the one backend BYOK/uploads runs on. This test
+    # fails on the pre-fix code (mock_set is never called) and passes
+    # once the guard is scoped to the OpenSearch path only.
+    monkeypatch.setenv("RETRIEVAL_BACKEND", "postgres")
+    trace = _FakeTrace(
+        original_query="what is RLHF", answer_text="RLHF is...", fusion=_FakeFusion(dense_index_name="postgres:chunks")
+    )
+    with patch("src.reason.answer_cache.set_json") as mock_set:
+        set_cached_trace("what is RLHF", trace)
+    mock_set.assert_called_once()
+
+
+def test_a_session_scoped_cache_write_is_not_readable_without_that_session_id():
+    store: dict[str, tuple] = {}
+
+    def fake_get_json(key):
+        return store.get(key)
+
+    def fake_set_json(key, value, ttl_seconds):
+        store[key] = value
+
+    trace = _FakeTrace(original_query="what is RLHF", answer_text="visitor A's private answer")
+    with patch("src.reason.answer_cache.get_json", side_effect=fake_get_json), patch(
+        "src.reason.answer_cache.set_json", side_effect=fake_set_json
+    ):
+        set_cached_trace("what is RLHF", trace, session_id="visitor-a")
+
+        # Visitor B, asking the exact same question text, must miss —
+        # never see visitor A's cached (possibly private) answer.
+        assert get_cached_trace("what is RLHF", session_id="visitor-b") is None
+        assert get_cached_trace("what is RLHF") is None
+
+        # Visitor A themself still gets their own cache hit.
+        hit = get_cached_trace("what is RLHF", session_id="visitor-a")
+    assert hit == {"original_query": "what is RLHF", "answer_text": "visitor A's private answer", "fusion": None}

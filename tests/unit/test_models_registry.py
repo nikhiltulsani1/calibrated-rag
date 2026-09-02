@@ -2,6 +2,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from src.platform.credentials import Credentials, reset_credentials, set_credentials
 from src.platform.models import (
     CompletionResult,
     ModelBinding,
@@ -109,6 +110,51 @@ def test_provider_has_key_false_when_env_var_missing(monkeypatch):
 
 def test_provider_has_key_false_for_unknown_provider():
     assert provider_has_key("not_a_real_provider") is False
+
+
+# ---------------------------------------------------------------------
+# Phase 2 (BYOK) — a visitor's own key must win over the server's
+# os.environ, and provider_has_key must see it too (the real gap the
+# plan flagged: without this, usable_ladder() silently filters out a
+# rung the visitor DOES have a key for).
+# ---------------------------------------------------------------------
+
+
+def test_complete_uses_the_visitors_own_key_over_server_env(monkeypatch):
+    monkeypatch.setenv("GROQ_API_KEY", "server-key")
+    token = set_credentials(Credentials(groq="visitor-key"))
+    try:
+        fake_response = MagicMock()
+        fake_response.raise_for_status = lambda: None
+        fake_response.json = lambda: {"model": "m", "choices": [{"message": {"content": "hi"}}]}
+        with patch("httpx.post", return_value=fake_response) as mock_post:
+            complete("rewrite", [{"role": "user", "content": "hi"}])
+        assert mock_post.call_args.kwargs["headers"]["Authorization"] == "Bearer visitor-key"
+    finally:
+        reset_credentials(token)
+
+
+def test_complete_falls_back_to_server_env_when_visitor_has_no_key(monkeypatch):
+    monkeypatch.setenv("GROQ_API_KEY", "server-key")
+    token = set_credentials(Credentials())  # visitor configured nothing
+    try:
+        fake_response = MagicMock()
+        fake_response.raise_for_status = lambda: None
+        fake_response.json = lambda: {"model": "m", "choices": [{"message": {"content": "hi"}}]}
+        with patch("httpx.post", return_value=fake_response) as mock_post:
+            complete("rewrite", [{"role": "user", "content": "hi"}])
+        assert mock_post.call_args.kwargs["headers"]["Authorization"] == "Bearer server-key"
+    finally:
+        reset_credentials(token)
+
+
+def test_provider_has_key_true_from_visitor_credentials_even_with_no_server_env(monkeypatch):
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    token = set_credentials(Credentials(openrouter="visitor-key"))
+    try:
+        assert provider_has_key("openrouter") is True
+    finally:
+        reset_credentials(token)
 
 
 def test_complete_model_override_bypasses_role_resolution(monkeypatch):

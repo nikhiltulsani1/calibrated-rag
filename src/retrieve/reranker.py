@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 import httpx
 
+from src.platform.credentials import get_credentials
 from src.platform.models import get_model
 from src.platform.telemetry import get_tracer
 
@@ -91,7 +92,7 @@ def _rerank_hosted(query: str, candidates: list[Candidate], top_n: int) -> Reran
             f"reranker only implements the jina provider so far, got {binding.provider!r}"
         )
 
-    api_key = os.environ.get("JINA_API_KEY")
+    api_key = get_credentials().jina or os.environ.get("JINA_API_KEY")
     if not api_key:
         return _degrade(candidates, top_n, "JINA_API_KEY is not set")
 
@@ -147,7 +148,7 @@ def _rerank_local(query: str, candidates: list[Candidate], top_n: int) -> Rerank
 
 
 def _rerank_cohere(query: str, candidates: list[Candidate], top_n: int) -> RerankResult:
-    api_key = os.environ.get("COHERE_API_KEY")
+    api_key = get_credentials().cohere or os.environ.get("COHERE_API_KEY")
     if not api_key:
         return _degrade(candidates, top_n, "COHERE_API_KEY is not set")
 
@@ -219,7 +220,7 @@ def rerank(
 
         if chosen_backend == "hosted":
             result = _rerank_hosted(query, candidates, top_n)
-            if result.degraded and os.environ.get("COHERE_API_KEY"):
+            if result.degraded and (get_credentials().cohere or os.environ.get("COHERE_API_KEY")):
                 # Real, automatic hosted->hosted fallback — added
                 # 2026-08-22 after Jina's account balance ran out
                 # repeatedly this session (four separate keys within

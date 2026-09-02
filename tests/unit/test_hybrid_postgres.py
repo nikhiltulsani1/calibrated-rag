@@ -2,7 +2,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.retrieve.hybrid_postgres import _filter_conditions, _owner_predicate, retrieve_with_trace
+from src.retrieve.hybrid_postgres import _document_conditions, _filter_conditions, _owner_predicate, retrieve_with_trace
 from src.schemas.query_plan import QueryPlan
 
 pytestmark = pytest.mark.unit
@@ -114,6 +114,45 @@ def test_retrieve_with_trace_passes_session_id_through_to_the_query(monkeypatch)
     ), patch("src.retrieve.hybrid_postgres.get_active_embed_provider", return_value="jina"):
         results, _trace = retrieve_with_trace(plan, top_n=10, session_id="visitor-abc")
 
+    assert results[0].id == "c1"
+
+
+# ---------------------------------------------------------------------
+# Phase 2 §5 (stage 6, uploads) — optional single-document scoping,
+# defense in depth ON TOP OF (not instead of) _owner_predicate above.
+# ---------------------------------------------------------------------
+
+
+def test_document_conditions_empty_when_no_document_id():
+    assert _document_conditions(None) == []
+    assert _document_conditions("") == []
+
+
+def test_document_conditions_filters_on_paper_id():
+    from src.store.schema import Chunk
+
+    conditions = _document_conditions("upload-abc123")
+    assert len(conditions) == 1
+    rendered = str(conditions[0].compile(compile_kwargs={"literal_binds": True}))
+    assert "paper_id" in rendered
+    assert "upload-abc123" in rendered
+
+
+def test_retrieve_with_trace_applies_document_scoping_alongside_owner_scoping(monkeypatch):
+    plan = QueryPlan(original="q", normalized="what is rlhf", expansions=[], filters={}, intent="factual")
+    fake_embed = MagicMock(vectors=[[0.1] * 1024])
+    session = _fake_session(lexical_rows=[("c1",)], dense_rows=[("c1",)], text_rows=[("c1", "text one")])
+
+    with patch("src.retrieve.hybrid_postgres.get_session", return_value=session), patch(
+        "src.retrieve.hybrid_postgres.embed_queries", return_value=fake_embed
+    ), patch("src.retrieve.hybrid_postgres.get_active_embed_provider", return_value="jina"):
+        results, _trace = retrieve_with_trace(
+            plan, top_n=10, session_id="visitor-a", document_id="upload-xyz"
+        )
+
+    # Doesn't error, and still returns results — the actual isolation SQL
+    # is covered directly by test_document_conditions_filters_on_paper_id
+    # and test_owner_predicate_* above.
     assert results[0].id == "c1"
 
 

@@ -7,6 +7,7 @@ from typing import Literal
 import httpx
 
 from src.index.embed_toggle import get_active_embed_provider, provider_to_index
+from src.platform.credentials import get_credentials
 from src.platform.models import get_model
 from src.platform.telemetry import get_tracer
 
@@ -26,7 +27,9 @@ class EmbeddingResult:
 
 def _embed_jina(texts: list[str], task: str, dimensions: int | None) -> EmbeddingResult:
     binding = get_model("embed")
-    api_key = os.environ.get("JINA_API_KEY")
+    # Phase 2 (BYOK): visitor's own key wins, same os.environ fallback
+    # convention as models.py::complete — see that function's comment.
+    api_key = get_credentials().jina or os.environ.get("JINA_API_KEY")
     if not api_key:
         raise RuntimeError("JINA_API_KEY is not set")
 
@@ -98,7 +101,7 @@ def _embed_mistral(texts: list[str], dimensions: int | None) -> EmbeddingResult:
     if dimensions is not None:
         raise NotImplementedError("dimensions truncation is not verified for the mistral embed provider")
 
-    api_key = os.environ.get("MISTRAL_API_KEY")
+    api_key = get_credentials().mistral or os.environ.get("MISTRAL_API_KEY")
     if not api_key:
         raise RuntimeError("MISTRAL_API_KEY is not set")
 

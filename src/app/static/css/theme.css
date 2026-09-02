@@ -88,7 +88,8 @@ a { color: var(--accent); }
 
 nav {
   display: flex;
-  gap: 1.5rem;
+  flex-wrap: wrap;
+  gap: 1rem 1.5rem;
   padding: 1rem 1.5rem;
   border-bottom: 1px solid var(--border);
   align-items: center;
@@ -248,3 +249,55 @@ th { color: var(--text-dim); font-weight: 600; }
 .htmx-indicator { opacity: 0; transition: opacity 150ms ease-in; }
 .htmx-request.htmx-indicator,
 .htmx-request .htmx-indicator { opacity: 1; }
+
+/* Phase 2 (BYOK settings + upload pages) */
+.settings-grid { display: flex; flex-direction: column; gap: 0.9rem; }
+
+.settings-row {
+  display: grid;
+  grid-template-columns: 9rem 1fr auto;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.settings-row label { color: var(--text-dim); font-size: 0.9rem; }
+
+.settings-form { display: flex; flex-direction: column; gap: 1rem; align-items: flex-start; }
+
+.btn-clear {
+  background: transparent;
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  font-weight: 500;
+  padding: 0.5rem 0.8rem;
+}
+.btn-clear:hover { color: var(--bad); border-color: var(--bad); opacity: 1; }
+
+.upload-form { display: flex; flex-direction: column; gap: 0.75rem; align-items: flex-start; max-width: 28rem; }
+input[type="file"] {
+  background: var(--panel-alt);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  padding: 0.6rem;
+  width: 100%;
+}
+
+/* Phase 2, stage 7: the free-tier live deployment's cold-start notice
+   (see deps.py::is_postgres_backend) — never shown on the default
+   clone-and-run path, which has no cold start at all. */
+.cold-start-notice {
+  background: var(--warn-bg);
+  color: var(--warn);
+  font-size: 0.85rem;
+  padding: 0.5rem 1.5rem;
+  border-bottom: 1px solid var(--border);
+}
+
+@media (max-width: 640px) {
+  .settings-row { grid-template-columns: 1fr; gap: 0.35rem; }
+  .settings-row .btn-clear { justify-self: start; }
+  form.ask-form { flex-direction: column; align-items: stretch; }
+  nav { gap: 0.75rem 1rem; padding: 0.85rem 1rem; }
+  main { padding: 1.5rem 1rem; }
+}

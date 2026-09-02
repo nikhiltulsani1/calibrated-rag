@@ -10,6 +10,13 @@ opensearch-py==3.2.0
 # still required by the default RETRIEVAL_BACKEND=opensearch path this
 # package doesn't replace.
 pgvector==0.4.2
+# Phase 2 (BYOK): encrypts each visitor's provider API keys into their
+# own browser cookie (src/app/routes/settings.py) — keys are never
+# stored server-side. itsdangerous separately signs (not encrypts) the
+# plain session-id cookie used for private-upload isolation, since that
+# value isn't secret, only tamper-resistant.
+cryptography==50.0.1
+itsdangerous==2.2.0
 pydantic==2.13.4
 redis==8.1.0
 pymupdf==1.28.2

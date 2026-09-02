@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from opentelemetry import context as otel_context
 
 from src.guardrails.base import guardrail_mode
+from src.platform.credentials import get_credentials, reset_credentials, set_credentials
 from src.platform.telemetry import get_tracer, run_with_otel_context
 from src.index.client import get_client
 from src.index.embed_toggle import active_embed_index_name, get_active_embed_provider
@@ -47,7 +48,7 @@ def _timed(timings: dict[str, float], name: str):
         timings[name] = timings.get(name, 0.0) + elapsed_ms
 
 
-def run_graph(query: str, *, top_n_context: int = 8) -> StageTrace:
+def run_graph(query: str, *, top_n_context: int = 8, session_id: str | None = None, document_id: str | None = None) -> StageTrace:
     """The real orchestrator: screen -> retrieve -> (rerank -> assess ->
     [refine loop] -> answer) -> decline-on-final-groundedness-failure.
 
@@ -81,6 +82,12 @@ def run_graph(query: str, *, top_n_context: int = 8) -> StageTrace:
     wins and stays on its own (jina-embedded) index; the embed-provider
     switch only applies to the "default" strategy's corpus, which is
     what every eval this session has actually run against.
+
+    `session_id`/`document_id` (Phase 2, stage 6: uploads): forwarded to
+    run_retrieve, which only actually uses them on the
+    RETRIEVAL_BACKEND=postgres path (private-per-uploader isolation +
+    optional single-document scoping) — meaningless, and ignored, on the
+    default OpenSearch path, which has no private-upload concept at all.
     """
     active_strategy = get_active_strategy()
     if active_strategy == "default":
@@ -147,7 +154,7 @@ def run_graph(query: str, *, top_n_context: int = 8) -> StageTrace:
         span.set_attribute("reason.short_circuited", False)
 
         with _timed(timings, "retrieve"):
-            candidates, fusion = run_retrieve(plan, index_name=index_name)
+            candidates, fusion = run_retrieve(plan, index_name=index_name, session_id=session_id, document_id=document_id)
         span.set_attribute("reason.num_retrieved", len(candidates))
 
         attempts: list[AttemptTrace] = []
@@ -188,10 +195,35 @@ def run_graph(query: str, *, top_n_context: int = 8) -> StageTrace:
                 with _timed(timings, "assess_ambiguity"):
                     return assess_ambiguity(query, reranked, metadata)
 
+            # Real bug found in review (Phase 2, BYOK): ThreadPoolExecutor
+            # worker threads do NOT inherit the submitting thread's
+            # contextvars (unlike asyncio task creation) — confirmed
+            # empirically, not assumed. run_with_otel_context only
+            # re-attaches the OTel context; it says nothing about
+            # src/platform/credentials.py's Credentials contextvar, which
+            # CredentialsMiddleware sets on the request's own task. Without
+            # this, a BYOK visitor's key is invisible inside
+            # assess_ambiguity's real `complete()` call (it always fires,
+            # no deterministic shortcut) — silently falls back to any
+            # server-side env key, or raises "not set" if there is none,
+            # exactly the "not set" error a BYOK-only deployment is built
+            # to never hit. Captured on the submitting thread (correct
+            # value for THIS request) and explicitly re-set inside each
+            # worker before it runs, mirroring run_with_otel_context's own
+            # attach-in-worker/detach-after pattern for the same reason.
+            request_credentials = get_credentials()
+
+            def _with_credentials(fn):
+                token = set_credentials(request_credentials)
+                try:
+                    return fn()
+                finally:
+                    reset_credentials(token)
+
             current_ctx = otel_context.get_current()
             with ThreadPoolExecutor(max_workers=2) as executor:
-                context_future = executor.submit(run_with_otel_context, current_ctx, _call_assess_context)
-                ambiguity_future = executor.submit(run_with_otel_context, current_ctx, _call_assess_ambiguity)
+                context_future = executor.submit(run_with_otel_context, current_ctx, _with_credentials, _call_assess_context)
+                ambiguity_future = executor.submit(run_with_otel_context, current_ctx, _with_credentials, _call_assess_ambiguity)
                 assess_result = context_future.result()
                 ambiguity_signal = ambiguity_future.result()
             assess_sufficient = assess_result.passed

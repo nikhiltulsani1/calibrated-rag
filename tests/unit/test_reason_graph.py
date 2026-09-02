@@ -146,7 +146,7 @@ def test_in_scope_query_wires_all_stages_in_order(monkeypatch):
     ) as mock_answer:
         trace = run_traced_query("what is RLHF", top_n_context=8)
 
-    mock_retrieve.assert_called_once_with(plan, index_name="rag_chunks")
+    mock_retrieve.assert_called_once_with(plan, index_name="rag_chunks", session_id=None, document_id=None)
     mock_rerank.assert_called_once_with("what is RLHF", fake_candidates, 8, index_name="rag_chunks")
     mock_answer.assert_called_once_with("what is RLHF", fake_reranked.items, {"c1": {"title": "T"}}, ambiguity_note=None)
 
@@ -161,6 +161,67 @@ def test_in_scope_query_wires_all_stages_in_order(monkeypatch):
     assert trace.answer.text == fake_answer.text
     assert trace.stopped_at is None
     assert len(trace.attempts) == 1  # passed on the first try, no retry needed
+
+
+# ---------------------------------------------------------------------
+# Real bug found in review (Phase 2, BYOK): assess_context/assess_ambiguity
+# run inside a ThreadPoolExecutor (see run_graph's own comment) — worker
+# threads do NOT inherit the submitting thread's contextvars, so a BYOK
+# visitor's Credentials (src/platform/credentials.py, set by
+# CredentialsMiddleware on the request's own task) were invisible inside
+# both calls, silently falling back to any server-side env key or raising
+# "not set" on a BYOK-only deployment. Verified by actually reading
+# get_credentials() from inside the mocked assess functions — this fails
+# on the pre-fix code (the worker thread would see the default empty
+# Credentials, not the visitor's key) and passes once the credentials are
+# explicitly re-set inside each worker.
+# ---------------------------------------------------------------------
+
+
+def test_byok_credentials_propagate_into_the_assess_threadpool(monkeypatch):
+    from src.platform.credentials import Credentials, get_credentials, reset_credentials, set_credentials
+    from src.reason.nodes.assess import AmbiguitySignal
+
+    monkeypatch.delenv("GUARDRAIL_GROUNDEDNESS_MODE", raising=False)
+    plan = QueryPlan(original="q", normalized="q", intent="factual")
+    fake_candidates = [Candidate(id="c1", text="t")]
+    fake_fusion = FusionTrace(arms=[], fused_scores={"c1": 0.5}, fused_order=["c1"], dense_index_name="rag_chunks")
+    fake_reranked = RerankResult(
+        items=[RankedCandidate(id="c1", text="t", score=0.9)], degraded=False, reason=None, model_served="m"
+    )
+    fake_answer = Answer(text="the answer", citations=[], abstained=False)
+    grounded_pass = GuardrailResult("groundedness", True, reason="overlap=1.00")
+
+    seen_creds: dict[str, object] = {}
+
+    def _fake_assess_context(query, reranked):
+        seen_creds["context"] = get_credentials()
+        return _SUFFICIENT
+
+    def _fake_assess_ambiguity(query, reranked, metadata):
+        seen_creds["ambiguity"] = get_credentials()
+        return AmbiguitySignal(flagged=False)
+
+    token = set_credentials(Credentials(groq="visitor-groq-key"))
+    try:
+        with patch("src.reason.graph.plan_query", return_value=plan), patch(
+            "src.reason.graph.run_retrieve", return_value=(fake_candidates, fake_fusion)
+        ), patch(
+            "src.reason.graph.run_rerank_and_metadata", return_value=(fake_reranked, {"c1": {"title": "T"}})
+        ), patch(
+            "src.reason.graph.assess_context", side_effect=_fake_assess_context
+        ), patch(
+            "src.reason.graph.assess_ambiguity", side_effect=_fake_assess_ambiguity
+        ), patch(
+            "src.reason.graph.run_answer",
+            return_value=(fake_answer, GuardrailResult("citation_integrity", True), grounded_pass),
+        ):
+            run_traced_query("what is RLHF")
+    finally:
+        reset_credentials(token)
+
+    assert seen_creds["context"].groq == "visitor-groq-key"
+    assert seen_creds["ambiguity"].groq == "visitor-groq-key"
 
 
 def test_real_categories_are_fetched_and_passed_into_plan_query(monkeypatch):

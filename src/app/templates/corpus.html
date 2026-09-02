@@ -50,7 +50,13 @@
     the production corpus, it only changes which pre-built corpus <code>/ask</code> and
     <code>/pipeline</code> query.
   </p>
-  {% if chunking_comparison %}
+  {% if is_postgres_backend() %}
+  <p class="empty-state">
+    A7's toggle only applies to the default OpenSearch-backed system — this deployment runs the
+    lightweight Postgres+pgvector backend instead, which doesn't implement per-strategy indices.
+    Dormant here by design, not broken.
+  </p>
+  {% elif chunking_comparison %}
   <table>
     <tr><th>strategy</th><th>role</th><th>recall@10</th><th>ndcg@10</th><th>chunks</th><th>index MB</th></tr>
     {% for name, r in chunking_comparison.results.items() %}

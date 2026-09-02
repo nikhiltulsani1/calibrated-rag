@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}Settings — Calibrated RAG{% endblock %}
+{% block content %}
+<h1>Settings</h1>
+<p class="subtitle">
+  Bring your own API keys — used only for your own questions, kept only in
+  an encrypted cookie in your browser, never stored on this server.
+  Leave a field blank to keep whatever's already saved for it.
+</p>
+
+<form class="settings-form" method="post" action="/settings">
+  <div class="card settings-grid">
+    {% for provider in providers %}
+    <div class="settings-row">
+      <label for="{{ provider.key }}">{{ provider.label }}</label>
+      <input
+        type="password"
+        id="{{ provider.key }}"
+        name="{{ provider.key }}"
+        placeholder="{{ provider.masked if provider.masked else 'not set' }}"
+        autocomplete="off"
+      >
+      {% if provider.masked %}
+      <button type="submit" form="clear-{{ provider.key }}" class="btn-clear" title="Remove this key">Clear</button>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  <button type="submit">Save</button>
+</form>
+
+{% for provider in providers if provider.masked %}
+<form id="clear-{{ provider.key }}" method="post" action="/settings/clear" style="display:none">
+  <input type="hidden" name="provider" value="{{ provider.key }}">
+</form>
+{% endfor %}
+{% endblock %}

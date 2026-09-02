@@ -5,7 +5,7 @@ from fastapi import APIRouter, Form, Request
 from fastapi.responses import RedirectResponse
 from sqlalchemy import func
 
-from src.app.deps import templates
+from src.app.deps import is_postgres_backend, templates
 from src.app.errors import friendly_error_message
 from src.reason.chunking_toggle import get_active_strategy, set_active_strategy
 from src.store.relational import get_session
@@ -28,6 +28,16 @@ def _load_chunking_comparison() -> dict | None:
 
 @router.post("/corpus/chunking-strategy")
 def set_chunking_strategy(strategy: str = Form(...)):
+    # A7's toggle only means anything on the default OpenSearch path —
+    # on RETRIEVAL_BACKEND=postgres, graph.py's index_name selection is
+    # computed but never actually consulted by the postgres retrieval
+    # path (see reason/nodes/retrieve.py's dispatch), so writing this
+    # would silently do nothing while looking like it worked. The
+    # corpus.html form itself is hidden behind is_postgres_backend() for
+    # the same reason (see corpus_page below) — this check is defense in
+    # depth against a stale/hand-crafted POST reaching here directly.
+    if is_postgres_backend():
+        return RedirectResponse(url="/corpus", status_code=303)
     set_active_strategy(strategy)
     return RedirectResponse(url="/corpus", status_code=303)
 
@@ -42,12 +52,24 @@ def corpus_page(request: Request):
     }
     session = get_session()
     try:
-        paper_count = session.query(func.count(Paper.arxiv_id)).scalar() or 0
-        chunk_count = session.query(func.count(Chunk.chunk_id)).scalar() or 0
+        # Real bug found in review (Phase 2, stage 6): this page has no
+        # audience gate at all — every visitor sees it, unauthenticated —
+        # so it must only ever show the SHARED corpus (owner_session_id
+        # IS NULL), never a visitor's private upload. Before this filter,
+        # any visitor's uploaded PDF (title, category, chunk count)
+        # rendered here for every other visitor, exactly the cross-
+        # visitor leak hybrid_postgres.py's _owner_predicate,
+        # answer_cache.py's session-scoped key, and runs.py's ownership
+        # check exist to prevent — this one route was the gap.
+        paper_count = session.query(func.count(Paper.arxiv_id)).filter(Paper.owner_session_id.is_(None)).scalar() or 0
+        chunk_count = (
+            session.query(func.count(Chunk.chunk_id)).filter(Chunk.owner_session_id.is_(None)).scalar() or 0
+        )
 
         papers_rows = (
             session.query(Paper, func.count(Chunk.chunk_id))
             .outerjoin(Chunk, Chunk.paper_id == Paper.arxiv_id)
+            .filter(Paper.owner_session_id.is_(None))
             .group_by(Paper.arxiv_id)
             .order_by(Paper.ingested_at.desc())
             .all()

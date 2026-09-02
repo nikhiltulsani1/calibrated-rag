@@ -11,7 +11,13 @@ from src.schemas.query_plan import QueryPlan
 _RECALL_SIZE = 50
 
 
-def run_retrieve(plan: QueryPlan, index_name: str = INDEX_NAME, *, session_id: str | None = None) -> tuple[list[Candidate], FusionTrace]:
+def run_retrieve(
+    plan: QueryPlan,
+    index_name: str = INDEX_NAME,
+    *,
+    session_id: str | None = None,
+    document_id: str | None = None,
+) -> tuple[list[Candidate], FusionTrace]:
     """The raw hybrid-search fetch — once per query, not once per retry
     attempt. Only reranking's `top_n` widens on retry (see nodes/refine.py);
     re-running the fetch itself on retry would just re-score the same 50
@@ -23,14 +29,15 @@ def run_retrieve(plan: QueryPlan, index_name: str = INDEX_NAME, *, session_id: s
     (RETRIEVAL_BACKEND=postgres, the free-tier live deployment only) —
     the two backends never run in the same process's request path at
     once, so a single env-var check here is enough, not a per-call
-    parameter threaded from every caller. `session_id` is meaningless on
-    the OpenSearch path (that corpus has no private uploads) and is only
-    forwarded when the postgres backend is actually active.
+    parameter threaded from every caller. `session_id`/`document_id` are
+    meaningless on the OpenSearch path (that corpus has no private
+    uploads) and are only forwarded when the postgres backend is
+    actually active.
     """
     if os.environ.get("RETRIEVAL_BACKEND", "opensearch") == "postgres":
         from src.retrieve.hybrid_postgres import retrieve_with_trace as retrieve_with_trace_postgres
 
-        return retrieve_with_trace_postgres(plan, top_n=_RECALL_SIZE, session_id=session_id)
+        return retrieve_with_trace_postgres(plan, top_n=_RECALL_SIZE, session_id=session_id, document_id=document_id)
     return retrieve_with_trace(plan, top_n=_RECALL_SIZE, index_name=index_name)
 
 

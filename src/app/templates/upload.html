@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}Upload — Calibrated RAG{% endblock %}
+{% block content %}
+<h1>Upload</h1>
+
+{% if unavailable %}
+<p class="subtitle">Ask a question about your own PDF, kept private to your browser session.</p>
+<div class="card" style="border-left: 3px solid var(--bad);">
+  <strong>Not available on this deployment.</strong>
+  <p>
+    Private uploads need the lightweight Postgres+pgvector retrieval backend
+    (<code>RETRIEVAL_BACKEND=postgres</code>) this local/clone-and-run system doesn't use — it runs
+    the full hybrid-OpenSearch system instead. Uploads are a free-tier live-deployment-only feature.
+  </p>
+</div>
+{% else %}
+<p class="subtitle">
+  Upload a PDF and ask questions about it privately — it's never merged into the shared corpus,
+  and only your own browser session can see or query it. Needs at least one of your own API keys
+  set on the <a href="/settings">Settings</a> page. Files over {{ max_mb }} MB aren't accepted, and
+  uploads are automatically removed after {{ ttl_days }} days.
+</p>
+
+{% if error %}
+<div class="card" style="border-left: 3px solid var(--bad);">
+  <strong style="color: var(--bad);">Couldn't process that file.</strong>
+  <p>{{ error }}</p>
+</div>
+{% endif %}
+
+<form class="upload-form" method="post" action="/upload" enctype="multipart/form-data">
+  <input type="file" name="file" accept="application/pdf" required>
+  <button type="submit">Upload &amp; ask</button>
+</form>
+
+<h2>Your documents</h2>
+{% if not documents %}
+<p class="empty-state">Nothing uploaded yet this session.</p>
+{% else %}
+<table>
+  <tr><th>Title</th><th>Uploaded</th><th></th></tr>
+  {% for doc in documents %}
+  <tr>
+    <td>{{ doc.title }}</td>
+    <td>{{ doc.ingested_at }}</td>
+    <td><a href="/ask?document_id={{ doc.document_id }}">Ask about this document</a></td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+{% endif %}
+{% endblock %}

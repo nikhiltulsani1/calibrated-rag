@@ -3,6 +3,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src.index.embedder import EmbeddingResult, embed_passages, embed_queries, embed_queries_with_fallback, embed_query
+from src.platform.credentials import Credentials, reset_credentials, set_credentials
 
 pytestmark = pytest.mark.unit
 
@@ -21,6 +22,17 @@ def test_embed_query_raises_without_api_key(monkeypatch):
     monkeypatch.delenv("JINA_API_KEY", raising=False)
     with pytest.raises(RuntimeError, match="JINA_API_KEY"):
         embed_query("hello")
+
+
+def test_embed_query_uses_visitors_own_jina_key_over_server_env(monkeypatch):
+    monkeypatch.setenv("JINA_API_KEY", "server-key")
+    token = set_credentials(Credentials(jina="visitor-key"))
+    try:
+        with patch("httpx.post", return_value=_fake_jina_response([[0.1, 0.2]])) as mock_post:
+            embed_query("what is RLHF")
+        assert mock_post.call_args.kwargs["headers"]["Authorization"] == "Bearer visitor-key"
+    finally:
+        reset_credentials(token)
 
 
 def test_embed_raises_on_unsupported_provider():
@@ -166,6 +178,19 @@ def test_explicit_provider_override_bypasses_the_toggle():
             embed_query("hello", provider="mistral")
     # The toggle was never even consulted — provider= short-circuits it.
     assert not mock_toggle.called
+
+
+def test_mistral_uses_visitors_own_key_over_server_env(monkeypatch):
+    monkeypatch.setenv("MISTRAL_API_KEY", "server-key")
+    token = set_credentials(Credentials(mistral="visitor-key"))
+    try:
+        with patch("src.index.embedder.get_active_embed_provider", return_value="mistral"), patch(
+            "httpx.post", return_value=_fake_mistral_response([[0.1]])
+        ) as mock_post:
+            embed_query("hello")
+        assert mock_post.call_args.kwargs["headers"]["Authorization"] == "Bearer visitor-key"
+    finally:
+        reset_credentials(token)
 
 
 def test_mistral_raises_without_api_key(monkeypatch):

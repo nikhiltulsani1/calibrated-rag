@@ -2,10 +2,18 @@
 {% block title %}Ask — Calibrated RAG{% endblock %}
 {% block content %}
 <h1>Ask</h1>
+{% if document_id %}
+<div class="card" style="border-left: 3px solid var(--accent, #6ea8fe);">
+  Scoped to your uploaded document — this question is answered only from that document, not the
+  shared corpus. <a href="/ask">Ask the shared corpus instead</a>.
+</div>
+{% else %}
 <p class="subtitle">Ask a question about the ingested arXiv corpus.</p>
+{% endif %}
 
 <form class="ask-form" method="post" action="/ask" hx-post="/ask" hx-target="#result" hx-indicator="#spinner">
   <input type="text" name="query" placeholder="e.g. what is RLHF?" autocomplete="off" required maxlength="2000">
+  {% if document_id %}<input type="hidden" name="document_id" value="{{ document_id }}">{% endif %}
   <button type="submit">Ask</button>
 </form>
 <p id="spinner" class="htmx-indicator subtitle">Planning → searching → reranking → writing…</p>

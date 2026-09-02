@@ -6,15 +6,20 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from src.app.errors import friendly_error_message
-from src.app.middleware import RequestIdMiddleware, install_request_id_log_filter
-from src.app.routes import ask, corpus, health, pipeline
+from src.app.middleware import CredentialsMiddleware, RequestIdMiddleware, install_request_id_log_filter
+from src.app.routes import ask, corpus, health, pipeline, settings, upload
 
 logger = logging.getLogger(__name__)
 install_request_id_log_filter()
 
 app = FastAPI(title="Calibrated RAG")
 
+# Order matters: Starlette runs middleware in reverse of add order, so
+# CredentialsMiddleware (added second) runs OUTERMOST, wrapping
+# RequestIdMiddleware — request_id is available for logging inside the
+# credentials-handling path too, not just inside routes.
 app.add_middleware(RequestIdMiddleware)
+app.add_middleware(CredentialsMiddleware)
 
 app.mount("/static", StaticFiles(directory=str(Path(__file__).resolve().parent / "static")), name="static")
 
@@ -22,6 +27,8 @@ app.include_router(health.router)
 app.include_router(ask.router)
 app.include_router(pipeline.router)
 app.include_router(corpus.router)
+app.include_router(settings.router)
+app.include_router(upload.router)
 
 
 @app.get("/")

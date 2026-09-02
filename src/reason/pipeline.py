@@ -18,15 +18,20 @@ from src.schemas.answer import Answer
 __all__ = ["AttemptTrace", "StageTrace", "fetch_metadata", "run_traced_query", "answer_query"]
 
 
-def run_traced_query(query: str, *, top_n_context: int = 8) -> StageTrace:
+def run_traced_query(
+    query: str, *, top_n_context: int = 8, session_id: str | None = None, document_id: str | None = None
+) -> StageTrace:
     """The full pipeline, and the single source of truth for its
     orchestration: guardrails -> rewrite -> hybrid retrieve -> rerank ->
     assess -> generate -> guardrails. `answer_query()` below is a thin
     wrapper returning just the final answer; this is what actually runs,
     and what A5's visualiser calls to get every real intermediate stage.
     See `src.reason.graph.run_graph` for the real implementation.
+
+    `session_id`/`document_id` (Phase 2, stage 6) are only meaningful on
+    the RETRIEVAL_BACKEND=postgres path — see run_graph's docstring.
     """
-    return run_graph(query, top_n_context=top_n_context)
+    return run_graph(query, top_n_context=top_n_context, session_id=session_id, document_id=document_id)
 
 
 def answer_query(query: str, *, top_n_context: int = 8) -> Answer:

@@ -36,4 +36,15 @@ EXPOSE 8000
 # real SIGTERM from an orchestrator during a rolling deploy would hit
 # the shell, not uvicorn — losing graceful in-flight-request draining.
 ENV UVICORN_WORKERS=1
-CMD ["sh", "-c", "exec uvicorn src.app.main:app --host 0.0.0.0 --port 8000 --workers ${UVICORN_WORKERS}"]
+# Phase 2: --proxy-headers/--forwarded-allow-ips='*' — real bug found
+# live while testing BYOK's Secure-flagged cookies: Render (and most
+# PaaS hosts) terminate TLS at their own edge and forward to this
+# container over plain HTTP, so without this, request.url.scheme always
+# reads "http" even on the real HTTPS live deployment, which would make
+# any scheme-aware Secure-cookie logic wrongly think it's never on
+# HTTPS. This tells uvicorn to trust the X-Forwarded-Proto header
+# Render's proxy sets, so request.url.scheme reports the real, original
+# scheme. '*' is safe here specifically because Render's own edge is
+# the only thing that can reach this container's port at all — nothing
+# else sits between them for this deployment shape.
+CMD ["sh", "-c", "exec uvicorn src.app.main:app --host 0.0.0.0 --port 8000 --workers ${UVICORN_WORKERS} --proxy-headers --forwarded-allow-ips='*'"]

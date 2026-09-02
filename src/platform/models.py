@@ -7,6 +7,7 @@ from pathlib import Path
 import httpx
 import yaml
 
+from src.platform.credentials import get_credentials
 from src.platform.telemetry import get_tracer
 
 _CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "models.yaml"
@@ -61,9 +62,18 @@ def provider_has_key(provider: str) -> bool:
     """Whether the API key a provider needs is actually configured —
     used by ladder-descent-on-retry callers to skip a fallback rung
     that would just fail immediately with a *different*, less useful
-    error (a missing key) instead of retrying the real problem."""
+    error (a missing key) instead of retrying the real problem.
+
+    Phase 2 (BYOK): must check the visitor's own credentials too, not
+    just os.environ — real gap flagged during design and confirmed here:
+    without this, usable_ladder() would silently filter out a rung the
+    visitor DOES have a key for, just because the server's own
+    os.environ doesn't happen to have one configured.
+    """
     if provider not in _CHAT_ENDPOINTS:
         return False
+    if getattr(get_credentials(), provider, None):
+        return True
     _, api_key_env = _CHAT_ENDPOINTS[provider]
     return bool(os.environ.get(api_key_env))
 
@@ -211,7 +221,13 @@ def complete(
                 f"(role {role!r}) — only {sorted(_CHAT_ENDPOINTS)} are implemented so far"
             )
         url, api_key_env = _CHAT_ENDPOINTS[binding.provider]
-        api_key = os.environ.get(api_key_env)
+        # Phase 2 (BYOK): the visitor's own key (from the request-scoped
+        # Credentials contextvar) wins when present, falling back to the
+        # server's own os.environ value — a deployment that never sets
+        # BYOK credentials sees zero behavior change. See
+        # src/platform/credentials.py's docstring for why this is a
+        # contextvar and not a second os.environ write.
+        api_key = getattr(get_credentials(), binding.provider, None) or os.environ.get(api_key_env)
         if not api_key:
             raise RuntimeError(f"{api_key_env} is not set — required for role {role!r}")
 

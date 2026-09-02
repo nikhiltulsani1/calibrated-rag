@@ -25,8 +25,16 @@
     <a href="/ask" class="{{ 'active' if active == 'ask' }}">Ask</a>
     <a href="/pipeline" class="{{ 'active' if active == 'pipeline' }}">Pipeline</a>
     <a href="/corpus" class="{{ 'active' if active == 'corpus' }}">Corpus</a>
+    <a href="/upload" class="{{ 'active' if active == 'upload' }}">Upload</a>
+    <a href="/settings" class="{{ 'active' if active == 'settings' }}">Settings</a>
     <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Toggle color theme">Auto</button>
   </nav>
+  {% if is_postgres_backend() %}
+  <div class="cold-start-notice">
+    This is a free-tier demo — it sleeps after 15 minutes idle, so the first request after a
+    while can take up to a minute to wake it back up. Not a bug.
+  </div>
+  {% endif %}
   <main>
     {% block content %}{% endblock %}
   </main>

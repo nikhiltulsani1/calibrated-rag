@@ -109,14 +109,33 @@ def _filter_conditions(filters: dict):
     return conditions
 
 
-def _lexical_search(query_text: str, filters: dict, size: int, session_id: str | None) -> list[str]:
+def _document_conditions(document_id: str | None):
+    """Phase 2 (stage 6, uploads): optional single-document scoping —
+    defense in depth ON TOP OF, not instead of, `_owner_predicate` above.
+    A caller passing someone else's document_id still gets nothing back,
+    since `_owner_predicate` is applied unconditionally alongside this,
+    not replaced by it — see the Phase 2 plan's §5.
+    """
+    if document_id:
+        return [Chunk.paper_id == document_id]
+    return []
+
+
+def _lexical_search(
+    query_text: str, filters: dict, size: int, session_id: str | None, document_id: str | None = None
+) -> list[str]:
     session = get_session()
     try:
         tsquery = func.plainto_tsquery("english", query_text)
         stmt = (
             select(Chunk.chunk_id)
             .join(Paper, Chunk.paper_id == Paper.arxiv_id)
-            .where(Chunk.text_tsv.op("@@")(tsquery), _owner_predicate(session_id), *_filter_conditions(filters))
+            .where(
+                Chunk.text_tsv.op("@@")(tsquery),
+                _owner_predicate(session_id),
+                *_filter_conditions(filters),
+                *_document_conditions(document_id),
+            )
             .order_by(func.ts_rank(Chunk.text_tsv, tsquery).desc())
             .limit(size)
         )
@@ -125,7 +144,14 @@ def _lexical_search(query_text: str, filters: dict, size: int, session_id: str |
         session.close()
 
 
-def _dense_search(vector: list[float], filters: dict, size: int, session_id: str | None, embedding_provider: str) -> list[str]:
+def _dense_search(
+    vector: list[float],
+    filters: dict,
+    size: int,
+    session_id: str | None,
+    embedding_provider: str,
+    document_id: str | None = None,
+) -> list[str]:
     session = get_session()
     try:
         stmt = (
@@ -136,6 +162,7 @@ def _dense_search(vector: list[float], filters: dict, size: int, session_id: str
                 Chunk.embedding_provider == embedding_provider,
                 _owner_predicate(session_id),
                 *_filter_conditions(filters),
+                *_document_conditions(document_id),
             )
             .order_by(Chunk.embedding.cosine_distance(vector))
             .limit(size)
@@ -146,7 +173,7 @@ def _dense_search(vector: list[float], filters: dict, size: int, session_id: str
 
 
 def retrieve_with_trace(
-    plan: QueryPlan, *, top_n: int = 50, session_id: str | None = None
+    plan: QueryPlan, *, top_n: int = 50, session_id: str | None = None, document_id: str | None = None
 ) -> tuple[list[Candidate], FusionTrace]:
     """The RETRIEVAL_BACKEND=postgres counterpart of hybrid.py's function
     of the same name — same contract (Candidate list + FusionTrace), same
@@ -171,12 +198,22 @@ def retrieve_with_trace(
         current_ctx = otel_context.get_current()
         with ThreadPoolExecutor(max_workers=8) as executor:
             lexical_futures = [
-                executor.submit(run_with_otel_context, current_ctx, _lexical_search, variant, plan.filters, _RECALL_SIZE, session_id)
+                executor.submit(
+                    run_with_otel_context, current_ctx, _lexical_search, variant, plan.filters, _RECALL_SIZE, session_id, document_id
+                )
                 for variant in query_variants
             ]
             dense_futures = [
                 executor.submit(
-                    run_with_otel_context, current_ctx, _dense_search, vector, plan.filters, _RECALL_SIZE, session_id, embedding_provider
+                    run_with_otel_context,
+                    current_ctx,
+                    _dense_search,
+                    vector,
+                    plan.filters,
+                    _RECALL_SIZE,
+                    session_id,
+                    embedding_provider,
+                    document_id,
                 )
                 for vector in variant_vectors
             ]

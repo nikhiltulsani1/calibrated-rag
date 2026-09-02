@@ -3,6 +3,7 @@ from unittest.mock import MagicMock, patch
 import httpx
 import pytest
 
+from src.platform.credentials import Credentials, reset_credentials, set_credentials
 from src.retrieve.reranker import Candidate, RerankResult, rerank
 
 pytestmark = pytest.mark.unit
@@ -58,6 +59,63 @@ def test_hosted_timeout_degrades(monkeypatch):
     assert result.degraded is True
     assert "TimeoutException" in result.reason
     assert [item.id for item in result.items] == ["c0", "c1", "c2"]
+
+
+# ---------------------------------------------------------------------
+# Phase 2 (BYOK) — a visitor's own key must win over the server's
+# os.environ, for both the primary hosted (Jina) path and the Cohere
+# fallback path.
+# ---------------------------------------------------------------------
+
+
+def test_hosted_uses_the_visitors_own_jina_key_over_server_env(monkeypatch):
+    monkeypatch.setenv("JINA_API_KEY", "server-key")
+    token = set_credentials(Credentials(jina="visitor-key"))
+    try:
+        fake_response = MagicMock()
+        fake_response.raise_for_status = lambda: None
+        fake_response.json = lambda: {"results": [{"index": 0, "relevance_score": 0.9}]}
+        with patch("httpx.post", return_value=fake_response) as mock_post:
+            rerank("q", _candidates(1), backend="hosted")
+        assert mock_post.call_args.kwargs["headers"]["Authorization"] == "Bearer visitor-key"
+    finally:
+        reset_credentials(token)
+
+
+def test_cohere_uses_the_visitors_own_key_over_server_env(monkeypatch):
+    monkeypatch.delenv("COHERE_API_KEY", raising=False)
+    token = set_credentials(Credentials(cohere="visitor-key"))
+    try:
+        fake_response = MagicMock()
+        fake_response.raise_for_status = lambda: None
+        fake_response.json = lambda: {"results": [{"index": 0, "relevance_score": 0.9}]}
+        with patch("httpx.post", return_value=fake_response) as mock_post:
+            result = rerank("q", _candidates(1), backend="cohere")
+        assert result.degraded is False
+        assert mock_post.call_args.kwargs["headers"]["Authorization"] == "Bearer visitor-key"
+    finally:
+        reset_credentials(token)
+
+
+def test_visitor_only_cohere_key_still_engages_the_hosted_fallback(monkeypatch):
+    # The rerank() dispatcher's own fallback-gate check (not just
+    # _rerank_cohere's key lookup) must also see a visitor-only Cohere
+    # key — real gap this guards: only fixing _rerank_cohere would leave
+    # the fallback silently never engaging for a visitor with no server-
+    # side COHERE_API_KEY configured at all.
+    monkeypatch.delenv("JINA_API_KEY", raising=False)
+    monkeypatch.delenv("COHERE_API_KEY", raising=False)
+    token = set_credentials(Credentials(cohere="visitor-key"))
+    try:
+        fake_response = MagicMock()
+        fake_response.raise_for_status = lambda: None
+        fake_response.json = lambda: {"results": [{"index": 0, "relevance_score": 0.9}]}
+        with patch("httpx.post", return_value=fake_response) as mock_post:
+            result = rerank("q", _candidates(1), backend="hosted")
+        assert result.degraded is False
+        assert result.model_served == "cohere:rerank-v3.5"
+    finally:
+        reset_credentials(token)
 
 
 # ---------------------------------------------------------------------
