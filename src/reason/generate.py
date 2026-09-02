@@ -268,7 +268,24 @@ def generate_answer(
             # Only markers the model actually used, not every candidate it
             # was given — an unused passage should not be listed as a
             # citation just because it was in context.
-            cited_indices = sorted({int(n) for n in re.findall(r"\[(\d+)\]", content)})
+            #
+            # Real bug found live (Phase 2 verification, 2026-09-02, same
+            # session as the fullwidth-bracket fix above): a model on the
+            # retry ladder appended extra annotation text INSIDE the
+            # bracket — "[1†L1-L4]" instead of the prompted "[1]" — even
+            # after the fullwidth-bracket normalization above, since these
+            # are plain ASCII brackets, just not digit-only content. The
+            # old `\[(\d+)\]` regex requires the ENTIRE bracket content to
+            # be digits, so this silently produced zero citations again —
+            # observed directly (a real trace: 8 chunks retrieved, a real
+            # generated answer, 0 citations extracted). Matching on a
+            # LEADING digit run and tolerating any non-bracket junk after
+            # it is the more general fix this class of bug actually
+            # needs: `[^\[\]]*` can't cross into a neighboring bracket, so
+            # this still can't merge two separate markers into one, and a
+            # bracket that doesn't start with a digit (e.g. a genuine
+            # aside like "[unclear]") still correctly doesn't match.
+            cited_indices = sorted({int(n) for n in re.findall(r"\[(\d+)[^\[\]]*\]", content)})
             for idx in cited_indices:
                 if 1 <= idx <= len(candidates):
                     candidate = candidates[idx - 1]

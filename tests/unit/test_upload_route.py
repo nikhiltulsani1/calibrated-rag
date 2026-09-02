@@ -1,12 +1,26 @@
+import inspect
 from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
 
 from src.app.main import app
+from src.app.routes.upload import upload_submit
 from src.ingest.document_parser import ParsedDocument, ParsedSection
 
 pytestmark = pytest.mark.unit
+
+
+def test_upload_submit_is_a_plain_sync_route_not_a_coroutine():
+    # Real bug found in review: this route used to be `async def`, but
+    # every step inside it (parse_pdf, embed_passages's synchronous
+    # httpx.post, the DB writes) is blocking code with no real `await` —
+    # an `async def` route with only blocking work inside runs directly
+    # on the single event loop thread instead of FastAPI's automatic
+    # threadpool (which every OTHER route in this codebase gets for free
+    # by being a plain `def` handler). Being sync is what lets FastAPI
+    # thread-pool it like ask.py/pipeline.py/corpus.py.
+    assert not inspect.iscoroutinefunction(upload_submit)
 
 # Phase 2 §5 (stage 6): private uploads only exist on the
 # RETRIEVAL_BACKEND=postgres path. parse_pdf/chunk_document/embed_passages

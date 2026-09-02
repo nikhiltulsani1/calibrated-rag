@@ -36,6 +36,14 @@ def real_categories() -> set[str]:
     Python rather than a more elaborate SQL unnest, since the corpus
     size here is small enough that this is genuinely simpler and just
     as fast. Cached 24h, same discipline as the OpenSearch version.
+
+    Scoped to the SHARED corpus only (`owner_session_id IS NULL`) — real
+    gap found in review: this result is cached globally, visible to every
+    visitor via the query planner. Uploads always set `category=[]`
+    today so nothing has actually leaked yet, but without this filter a
+    private upload's category would enter the 24h globally-cached set the
+    moment that stopped being true, the same class of bug as the
+    /corpus leak this stage's review already found and fixed.
     """
     cached = get_json(_VALID_CATEGORIES_CACHE_PREFIX)
     if cached is not None:
@@ -43,7 +51,7 @@ def real_categories() -> set[str]:
 
     session = get_session()
     try:
-        rows = session.execute(select(Paper.category)).all()
+        rows = session.execute(select(Paper.category).where(Paper.owner_session_id.is_(None))).all()
     finally:
         session.close()
     categories: set[str] = set()
@@ -234,9 +242,23 @@ def retrieve_with_trace(
             span.set_attribute("hybrid_postgres.num_results", 0)
             return [], trace
 
+        # Defense in depth, found in review: fused_ids were already
+        # correctly owner/document-scoped by _lexical_search/_dense_search
+        # above, but re-applying the same predicates here means this final
+        # hydration step can never return another session's text even if
+        # a future change to chunk_id generation (e.g. a content-only hash
+        # shared across documents) ever produced a cross-session id
+        # collision — the isolation boundary isn't allowed to depend on
+        # chunk_id uniqueness being perfect.
         session = get_session()
         try:
-            rows = session.execute(select(Chunk.chunk_id, Chunk.text).where(Chunk.chunk_id.in_(fused_ids))).all()
+            rows = session.execute(
+                select(Chunk.chunk_id, Chunk.text).where(
+                    Chunk.chunk_id.in_(fused_ids),
+                    _owner_predicate(session_id),
+                    *_document_conditions(document_id),
+                )
+            ).all()
         finally:
             session.close()
         by_id = {row[0]: row[1] for row in rows}

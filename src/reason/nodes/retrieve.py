@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import os
-
 from src.index.mapping import INDEX_NAME
+from src.platform.backend import is_postgres_backend
 from src.reason.state import fetch_metadata
 from src.retrieve.hybrid import FusionTrace, retrieve_with_trace
 from src.retrieve.reranker import Candidate, RerankResult, rerank
@@ -34,7 +33,7 @@ def run_retrieve(
     uploads) and are only forwarded when the postgres backend is
     actually active.
     """
-    if os.environ.get("RETRIEVAL_BACKEND", "opensearch") == "postgres":
+    if is_postgres_backend():
         from src.retrieve.hybrid_postgres import retrieve_with_trace as retrieve_with_trace_postgres
 
         return retrieve_with_trace_postgres(plan, top_n=_RECALL_SIZE, session_id=session_id, document_id=document_id)
@@ -51,7 +50,7 @@ def run_rerank_and_metadata(
     """
     reranked = rerank(query, candidates, top_n=top_n)
     ids = [item.id for item in reranked.items]
-    if os.environ.get("RETRIEVAL_BACKEND", "opensearch") == "postgres":
+    if is_postgres_backend():
         metadata = _fetch_metadata_postgres(ids)
     else:
         metadata = fetch_metadata(ids, index_name=index_name)

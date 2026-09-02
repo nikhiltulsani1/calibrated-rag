@@ -5,6 +5,8 @@ import os
 
 from fastapi import APIRouter, Response
 
+from src.platform.backend import is_postgres_backend
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
@@ -61,7 +63,7 @@ def _check_opensearch() -> str | None:
     # intent) exists to avoid. The default RETRIEVAL_BACKEND=opensearch
     # path (local clone-and-run) is completely unaffected — this check
     # still runs there exactly as before.
-    if os.environ.get("RETRIEVAL_BACKEND", "opensearch") == "postgres":
+    if is_postgres_backend():
         return None
     try:
         from opensearchpy import OpenSearch

@@ -1,8 +1,6 @@
-import os
-
 from fastapi import APIRouter, Depends, Request
 
-from src.app.deps import templates
+from src.app.deps import is_postgres_backend, templates
 from src.app.errors import friendly_error_message
 from src.app.rate_limit import enforce_rate_limit
 from src.reason.answer_cache import get_cached_trace, set_cached_trace
@@ -13,10 +11,6 @@ from src.store.runs import load_run, save_run
 router = APIRouter()
 
 
-def _is_postgres_backend() -> bool:
-    return os.environ.get("RETRIEVAL_BACKEND", "opensearch") == "postgres"
-
-
 @router.get("/pipeline", dependencies=[Depends(enforce_rate_limit)])
 def pipeline_page(request: Request, query: str | None = None, run_id: str | None = None):
     trace = None
@@ -24,7 +18,7 @@ def pipeline_page(request: Request, query: str | None = None, run_id: str | None
     context_word_estimate = 0
     replayed = bool(run_id)
     saved_run_id = None
-    session_id = request.state.session_id if _is_postgres_backend() else None
+    session_id = request.state.session_id if is_postgres_backend() else None
 
     if run_id:
         session = get_session()

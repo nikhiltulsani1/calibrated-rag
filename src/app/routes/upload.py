@@ -9,7 +9,7 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from src.app.deps import templates
+from src.app.deps import is_postgres_backend, templates
 from src.app.errors import friendly_error_message
 from src.app.rate_limit import enforce_rate_limit
 from src.index.embed_toggle import get_active_embed_provider
@@ -30,10 +30,6 @@ _MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", "10"))
 # this deployment, see the Phase 2 plan's "Explicitly out of scope") —
 # run on every GET /upload instead.
 _UPLOAD_TTL_DAYS = int(os.environ.get("UPLOAD_TTL_DAYS", "7"))
-
-
-def _is_postgres_backend() -> bool:
-    return os.environ.get("RETRIEVAL_BACKEND", "opensearch") == "postgres"
 
 
 def _cleanup_expired_uploads(session: Session) -> None:
@@ -70,7 +66,7 @@ def upload_page(request: Request):
     # OpenSearch path has no such concept, so this stays a dormant,
     # clearly-labeled page there rather than silently ingesting into the
     # shared corpus with no privacy guarantee at all.
-    if not _is_postgres_backend():
+    if not is_postgres_backend():
         return templates.TemplateResponse(request, "upload.html", {"active": "upload", "unavailable": True})
 
     session = get_session()
@@ -88,15 +84,28 @@ def upload_page(request: Request):
 
 
 @router.post("/upload", dependencies=[Depends(enforce_rate_limit)])
-async def upload_submit(request: Request, file: UploadFile = File(...)):
-    if not _is_postgres_backend():
+def upload_submit(request: Request, file: UploadFile = File(...)):
+    if not is_postgres_backend():
         return templates.TemplateResponse(request, "upload.html", {"active": "upload", "unavailable": True})
 
     session_id = request.state.session_id
     error = None
     document_id = None
 
-    pdf_bytes = await file.read()
+    # Real bug found in review: this route used to be `async def` (for
+    # `await file.read()`), but every subsequent step here — parse_pdf
+    # (CPU-bound), embed_passages (a synchronous httpx.post), and the DB
+    # writes — is blocking, synchronous code. An `async def` route with
+    # no actual `await` inside its blocking work runs directly on the
+    # single event loop thread instead of FastAPI's automatic threadpool
+    # (which is exactly what every OTHER route in this codebase — ask.py,
+    # pipeline.py, corpus.py — gets for free by being a plain `def`
+    # handler). One slow upload would stall every other concurrent
+    # visitor's request on the same worker. `file.file` is the raw,
+    # synchronous SpooledTemporaryFile UploadFile wraps — reading it
+    # directly (no `await`) is the standard way to keep a file-upload
+    # route plain-sync and threadpooled like the rest of this codebase.
+    pdf_bytes = file.file.read()
     if len(pdf_bytes) > _MAX_UPLOAD_MB * 1024 * 1024:
         error = f"That file is larger than the {_MAX_UPLOAD_MB} MB limit for this deployment."
     else:

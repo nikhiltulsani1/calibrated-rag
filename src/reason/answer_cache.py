@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 
 from src.index.embed_toggle import get_active_embed_provider, provider_to_index
+from src.platform.backend import is_postgres_backend
 from src.platform.cache import build_cache_key, get_json, set_json
 from src.reason.chunking_toggle import get_active_strategy
 from src.reason.state import StageTrace
@@ -101,7 +102,7 @@ def set_cached_trace(query: str, trace: StageTrace, *, session_id: str | None = 
     cross-provider fallback to guard against on that path at all; the
     check is simply inapplicable there, not just differently-keyed.
     """
-    if trace.fusion is not None and os.environ.get("RETRIEVAL_BACKEND", "opensearch") != "postgres":
+    if trace.fusion is not None and not is_postgres_backend():
         expected_index = provider_to_index(get_active_embed_provider())
         if trace.fusion.dense_index_name != expected_index:
             return

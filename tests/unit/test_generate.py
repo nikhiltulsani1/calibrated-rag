@@ -74,6 +74,37 @@ def test_fullwidth_citation_brackets_are_normalized_and_still_parsed():
     assert "[1]" in answer.text
 
 
+def test_citation_marker_with_trailing_annotation_text_is_still_parsed():
+    # Real bug found live (Phase 2 verification, 2026-09-02) — a distinct
+    # shape of the same underlying fragility the fullwidth-bracket fix
+    # above addressed: a model appended extra annotation text INSIDE
+    # plain ASCII brackets ("[1†L1-L4]" instead of the prompted "[1]").
+    # Observed directly in a real trace: real retrieval, a real answer,
+    # 0 citations extracted. The old regex required the entire bracket
+    # content to be digits; matching a leading digit run and tolerating
+    # trailing junk is what actually fixes this class of bug.
+    candidates = [RankedCandidate(id="c1", text="Octopuses have blue blood.", score=0.9)]
+    metadata = {"c1": {"title": "Cephalopod Paper", "paper_id": "1111.1111", "section": "intro"}}
+    fake = CompletionResult(
+        provider="groq", model_served="m", content="Octopus blood is blue[1†L1-L4]."
+    )
+    with patch("src.reason.generate.complete", return_value=fake):
+        answer = generate_answer("what color is octopus blood", candidates, metadata)
+
+    assert len(answer.citations) == 1
+    assert answer.citations[0].chunk_id == "c1"
+
+
+def test_a_bracket_that_does_not_start_with_a_digit_is_not_mistaken_for_a_citation():
+    # The widened regex must still not treat a genuine bracketed aside
+    # (no leading digit) as a citation marker.
+    candidates = [RankedCandidate(id="c1", text="a", score=0.9)]
+    fake = CompletionResult(provider="groq", model_served="m", content="This is [unclear] from context.")
+    with patch("src.reason.generate.complete", return_value=fake):
+        answer = generate_answer("q", candidates, {"c1": {"title": "A"}})
+    assert answer.citations == []
+
+
 def test_only_actually_cited_markers_become_citations():
     # The model was given two passages but only cited one — the unused
     # passage must not appear in the citation list just because it was

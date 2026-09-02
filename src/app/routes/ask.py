@@ -1,8 +1,6 @@
-import os
-
 from fastapi import APIRouter, Depends, Form, Request
 
-from src.app.deps import templates
+from src.app.deps import is_postgres_backend, templates
 from src.app.errors import friendly_error_message
 from src.app.rate_limit import enforce_rate_limit
 from src.reason.answer_cache import get_cached_trace, set_cached_trace
@@ -13,12 +11,16 @@ from src.store.runs import save_run
 router = APIRouter()
 
 
-def _is_postgres_backend() -> bool:
-    return os.environ.get("RETRIEVAL_BACKEND", "opensearch") == "postgres"
-
-
 @router.get("/ask")
 def ask_page(request: Request, document_id: str | None = None):
+    # Real bug found in review: document_id used to reach the template
+    # (and its "scoped to your document" privacy banner) unconditionally.
+    # On the default OpenSearch backend — where /upload is disabled and
+    # document scoping is never actually honored (ask_submit already
+    # drops it there) — a stale bookmark or shared /ask?document_id=...
+    # link would show a privacy claim the POST handler doesn't keep.
+    if not is_postgres_backend():
+        document_id = None
     return templates.TemplateResponse(request, "ask.html", {"active": "ask", "document_id": document_id})
 
 
@@ -29,8 +31,8 @@ def ask_submit(request: Request, query: str = Form(...), document_id: str | None
     # docstring. Passed as None on the default OpenSearch path so its
     # cache keys, saved runs, and retrieval behavior stay byte-for-byte
     # what they were before uploads existed.
-    session_id = request.state.session_id if _is_postgres_backend() else None
-    scoped_document_id = document_id if _is_postgres_backend() else None
+    session_id = request.state.session_id if is_postgres_backend() else None
+    scoped_document_id = document_id if is_postgres_backend() else None
 
     run_id = None
     cache_hit = False

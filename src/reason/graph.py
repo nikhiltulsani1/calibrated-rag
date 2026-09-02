@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from opentelemetry import context as otel_context
 
 from src.guardrails.base import guardrail_mode
+from src.platform.backend import is_postgres_backend
 from src.platform.credentials import get_credentials, reset_credentials, set_credentials
 from src.platform.telemetry import get_tracer, run_with_otel_context
 from src.index.client import get_client
@@ -129,7 +130,7 @@ def run_graph(query: str, *, top_n_context: int = 8, session_id: str | None = No
             # KeyError('OPENSEARCH_ADMIN_PASSWORD') on
             # RETRIEVAL_BACKEND=postgres deployments — dispatches the
             # same way src/reason/nodes/retrieve.py already does.
-            if os.environ.get("RETRIEVAL_BACKEND", "opensearch") == "postgres":
+            if is_postgres_backend():
                 from src.retrieve.hybrid_postgres import real_categories as real_categories_postgres
 
                 known_categories = frozenset(real_categories_postgres())
