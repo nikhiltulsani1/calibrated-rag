@@ -1,0 +1,18 @@
+{% if job_status == "processing" %}
+<div id="upload-status" class="card" hx-get="/upload/status/{{ job_id }}" hx-trigger="every 2s" hx-swap="outerHTML">
+  <p class="subtitle">Processing your upload&hellip;</p>
+</div>
+{% elif job_status == "done" %}
+<div id="upload-status" class="card">
+  <p>Done — <a href="/ask?document_id={{ document_id }}">ask about this document</a>.</p>
+</div>
+{% elif job_status == "error" %}
+<div id="upload-status" class="card" style="border-left: 3px solid var(--bad);">
+  <strong style="color: var(--bad);">Couldn't process that file.</strong>
+  <p>{{ job_error }}</p>
+</div>
+{% elif job_status == "unknown" %}
+<div id="upload-status" class="card">
+  <p class="subtitle">No upload found for that id — it may have expired, or belongs to a different session.</p>
+</div>
+{% endif %}

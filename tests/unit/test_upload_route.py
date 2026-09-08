@@ -6,7 +6,6 @@ from fastapi.testclient import TestClient
 
 from src.app.main import app
 from src.app.routes.upload import upload_submit
-from src.ingest.document_parser import ParsedDocument, ParsedSection
 
 pytestmark = pytest.mark.unit
 
@@ -83,53 +82,178 @@ def test_upload_rejects_a_file_over_the_size_limit(monkeypatch):
     assert b"larger than the 1 MB limit" in response.content
 
 
-def test_upload_rejects_a_pdf_with_no_extractable_text(monkeypatch):
+# Phase 3 stage 3: the "no extractable text" / "missing BYOK key" cases
+# used to be synchronous route-level checks — now they happen INSIDE the
+# background job (process_upload), not at enqueue time, so they're
+# covered by tests/unit/test_upload_job.py directly against the job
+# function instead of the route. The route itself no longer knows or
+# cares what process_upload will find.
+
+
+def test_successful_upload_enqueues_a_job_and_redirects_to_its_status(monkeypatch):
     monkeypatch.setenv("RETRIEVAL_BACKEND", "postgres")
+    client = TestClient(app, follow_redirects=False)
+    fake_job = MagicMock(id="fake-job-id-123")
+    fake_job.meta = {}
+    with patch("src.app.routes.upload.get_queue") as mock_get_queue:
+        mock_get_queue.return_value.enqueue.return_value = fake_job
+        response = client.post("/upload", files={"file": ("my paper.pdf", b"%PDF-1.4 fake", "application/pdf")})
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/upload?job_id=fake-job-id-123"
+    # session_id was recorded on the job so the status endpoint can
+    # later verify the same visitor is the one polling it.
+    assert fake_job.meta["session_id"]
+    fake_job.save_meta.assert_called_once()
+    mock_get_queue.return_value.enqueue.assert_called_once()
+
+
+# ---------------------------------------------------------------------
+# Phase 3, Stage 2: per-page update. Ownership check mirrors
+# store/runs.py::load_run's established pattern exactly — the real
+# scoped-delete SQL is covered by an integration test against real
+# Postgres (tests/integration/test_upload_page_replace_integration.py).
+# ---------------------------------------------------------------------
+
+
+def test_page_replace_unavailable_on_default_opensearch_backend(monkeypatch):
+    monkeypatch.delenv("RETRIEVAL_BACKEND", raising=False)
     client = TestClient(app)
-    with patch("src.app.routes.upload.parse_pdf", return_value=ParsedDocument(sections=[])), patch(
-        "src.app.routes.upload.get_session"
-    ) as mock_get_session:
-        fake_session = MagicMock()
-        fake_session.execute.return_value.scalars.return_value.all.return_value = []
-        fake_session.execute.return_value.all.return_value = []
-        mock_get_session.return_value = fake_session
-        response = client.post("/upload", files={"file": ("paper.pdf", b"%PDF-1.4 fake", "application/pdf")})
+    response = client.post(
+        "/upload/upload-xyz/pages/1", files={"file": ("page1.pdf", b"%PDF-1.4 fake", "application/pdf")}
+    )
     assert response.status_code == 200
-    assert b"any extractable text" in response.content
+    assert b"Not available on this deployment" in response.content
 
 
-def test_upload_surfaces_a_missing_byok_key_as_a_friendly_message(monkeypatch):
+def test_page_replace_returns_not_found_for_a_missing_document(monkeypatch):
     monkeypatch.setenv("RETRIEVAL_BACKEND", "postgres")
     client = TestClient(app)
-    parsed = ParsedDocument(sections=[ParsedSection(heading=None, text="a" * 200)])
-    with patch("src.app.routes.upload.parse_pdf", return_value=parsed), patch(
-        "src.app.routes.upload.embed_passages", side_effect=RuntimeError("JINA_API_KEY is not set")
-    ), patch("src.app.routes.upload.get_session") as mock_get_session:
+    with patch("src.app.routes.upload.get_session") as mock_get_session:
         fake_session = MagicMock()
+        fake_session.get.return_value = None
         fake_session.execute.return_value.scalars.return_value.all.return_value = []
         fake_session.execute.return_value.all.return_value = []
         mock_get_session.return_value = fake_session
-        response = client.post("/upload", files={"file": ("paper.pdf", b"%PDF-1.4 fake", "application/pdf")})
+        response = client.post(
+            "/upload/upload-xyz/pages/1", files={"file": ("page1.pdf", b"%PDF-1.4 fake", "application/pdf")}
+        )
+    assert response.status_code == 200
+    assert b"No document found" in response.content
+
+
+def test_page_replace_returns_not_found_for_a_different_owners_document(monkeypatch):
+    # Same "indistinguishable from not-found" rule as load_run — never a
+    # distinguishable 403 that would confirm the document_id exists.
+    monkeypatch.setenv("RETRIEVAL_BACKEND", "postgres")
+    client = TestClient(app)
+    other_owners_paper = MagicMock(owner_session_id="a-different-session")
+    with patch("src.app.routes.upload.get_session") as mock_get_session:
+        fake_session = MagicMock()
+        fake_session.get.return_value = other_owners_paper
+        fake_session.execute.return_value.scalars.return_value.all.return_value = []
+        fake_session.execute.return_value.all.return_value = []
+        mock_get_session.return_value = fake_session
+        response = client.post(
+            "/upload/upload-xyz/pages/1", files={"file": ("page1.pdf", b"%PDF-1.4 fake", "application/pdf")}
+        )
+    assert response.status_code == 200
+    assert b"No document found" in response.content
+
+
+# The success path (ownership matches -> scoped delete -> new chunks
+# inserted, every other page untouched) needs a real session_id
+# consistently threaded through middleware + DB rows to assert
+# meaningfully — covered by
+# tests/integration/test_upload_page_replace_integration.py against real
+# local Postgres instead of fragile mocking here.
+
+
+# ---------------------------------------------------------------------
+# Phase 3, Stage 3: job status polling. RQ's Job.fetch is mocked here —
+# the real Redis round trip (including the decode_responses gotcha) is
+# covered by tests/unit/test_platform_queue.py.
+# ---------------------------------------------------------------------
+
+
+def test_status_endpoint_reports_processing_while_the_job_is_unfinished():
+    monkeypatch_env = {"RETRIEVAL_BACKEND": "postgres"}
+    client = TestClient(app)
+    fake_job = MagicMock(meta={"session_id": "visitor-a"})
+    fake_job.is_finished = False
+    fake_job.is_failed = False
+    with patch.dict("os.environ", monkeypatch_env), patch(
+        "src.app.routes.upload.Job.fetch", return_value=fake_job
+    ), patch("src.app.middleware.get_or_create_session_id", return_value=("visitor-a", False)):
+        response = client.get("/upload/status/some-job-id")
+    assert response.status_code == 200
+    assert b"Processing your upload" in response.content
+
+
+def test_status_endpoint_reports_done_with_a_link_to_ask():
+    client = TestClient(app)
+    fake_job = MagicMock(meta={"session_id": "visitor-a"})
+    fake_job.is_finished = True
+    fake_job.result = {"status": "ok", "document_id": "upload-abc"}
+    with patch.dict("os.environ", {"RETRIEVAL_BACKEND": "postgres"}), patch(
+        "src.app.routes.upload.Job.fetch", return_value=fake_job
+    ), patch("src.app.middleware.get_or_create_session_id", return_value=("visitor-a", False)):
+        response = client.get("/upload/status/some-job-id")
+    assert response.status_code == 200
+    assert b"/ask?document_id=upload-abc" in response.content
+
+
+def test_status_endpoint_reports_the_jobs_own_friendly_error_message():
+    client = TestClient(app)
+    fake_job = MagicMock(meta={"session_id": "visitor-a"})
+    fake_job.is_finished = True
+    fake_job.result = {"status": "error", "message": "needs an API key that isn't configured"}
+    with patch.dict("os.environ", {"RETRIEVAL_BACKEND": "postgres"}), patch(
+        "src.app.routes.upload.Job.fetch", return_value=fake_job
+    ), patch("src.app.middleware.get_or_create_session_id", return_value=("visitor-a", False)):
+        response = client.get("/upload/status/some-job-id")
     assert response.status_code == 200
     assert b"needs an API key" in response.content
 
 
-def test_successful_upload_redirects_to_ask_scoped_to_the_new_document(monkeypatch):
-    monkeypatch.setenv("RETRIEVAL_BACKEND", "postgres")
-    client = TestClient(app, follow_redirects=False)
-    parsed = ParsedDocument(sections=[ParsedSection(heading=None, text="a" * 200)])
-    fake_embed_result = MagicMock(vectors=[[0.1] * 1024], model="jina-embeddings-v3", dimension=1024)
-    with patch("src.app.routes.upload.parse_pdf", return_value=parsed), patch(
-        "src.app.routes.upload.embed_passages", return_value=fake_embed_result
-    ), patch("src.app.routes.upload.get_active_embed_provider", return_value="jina"), patch(
-        "src.app.routes.upload.get_session"
-    ) as mock_get_session:
-        fake_session = MagicMock()
-        mock_get_session.return_value = fake_session
-        response = client.post("/upload", files={"file": ("my paper.pdf", b"%PDF-1.4 fake", "application/pdf")})
+def test_status_endpoint_never_leaks_a_raw_traceback_on_a_failed_job():
+    # A genuinely unexpected bug fails the RQ job itself (job.is_failed),
+    # distinct from process_upload's own caught error cases. job.exc_info
+    # is a raw formatted traceback string — this codebase never shows
+    # that to a visitor, so the endpoint must render a generic message
+    # instead, never job.exc_info's actual content.
+    client = TestClient(app)
+    fake_job = MagicMock(meta={"session_id": "visitor-a"})
+    fake_job.is_finished = False
+    fake_job.is_failed = True
+    fake_job.exc_info = "Traceback (most recent call last):\n  secret internal path\nZeroDivisionError: boom"
+    with patch.dict("os.environ", {"RETRIEVAL_BACKEND": "postgres"}), patch(
+        "src.app.routes.upload.Job.fetch", return_value=fake_job
+    ), patch("src.app.middleware.get_or_create_session_id", return_value=("visitor-a", False)):
+        response = client.get("/upload/status/some-job-id")
+    assert response.status_code == 200
+    assert b"secret internal path" not in response.content
+    assert b"Traceback" not in response.content
 
-    assert response.status_code == 303
-    assert response.headers["location"].startswith("/ask?document_id=upload-")
-    # Both the Paper and Chunk rows were added before commit.
-    assert fake_session.add.call_count == 2
-    fake_session.commit.assert_called_once()
+
+def test_status_endpoint_treats_a_different_owners_job_as_unknown():
+    client = TestClient(app)
+    fake_job = MagicMock(meta={"session_id": "a-different-visitor"})
+    with patch.dict("os.environ", {"RETRIEVAL_BACKEND": "postgres"}), patch(
+        "src.app.routes.upload.Job.fetch", return_value=fake_job
+    ), patch("src.app.middleware.get_or_create_session_id", return_value=("visitor-b", False)):
+        response = client.get("/upload/status/some-job-id")
+    assert response.status_code == 200
+    assert b"No upload found" in response.content
+
+
+def test_status_endpoint_treats_a_missing_job_as_unknown():
+    from rq.exceptions import NoSuchJobError
+
+    client = TestClient(app)
+    with patch.dict("os.environ", {"RETRIEVAL_BACKEND": "postgres"}), patch(
+        "src.app.routes.upload.Job.fetch", side_effect=NoSuchJobError
+    ):
+        response = client.get("/upload/status/nonexistent-job-id")
+    assert response.status_code == 200
+    assert b"No upload found" in response.content

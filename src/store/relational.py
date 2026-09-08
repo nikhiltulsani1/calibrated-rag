@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -49,6 +49,23 @@ def init_db() -> None:
     # the schema needs to evolve under real data rather than be created
     # once from nothing. create_all is honest about the current state:
     # idempotent, additive-only, no upgrade path yet.
+    #
+    # Real gap found in review (Phase 3): nothing in this codebase ever
+    # called init_db() automatically — not at app startup, not in the
+    # Dockerfile, not in compose.yml — so a genuinely fresh clone-and-run
+    # had no schema at all. Worse, `chunks.embedding` is a Vector(1024)
+    # column REGARDLESS of which retrieval backend is active (the
+    # OpenSearch path just never reads/writes it), so create_all() below
+    # would fail creating even the `chunks` table with a hard "type
+    # vector does not exist" error — confirmed directly against a real
+    # scratch database, not assumed — unless the pgvector extension is
+    # enabled first. `CREATE EXTENSION IF NOT EXISTS` is idempotent, a
+    # no-op on this project's existing local/Neon databases (already
+    # enabled via scripts/add_phase2_postgres_backend_columns.py) — this
+    # only matters for a database that has never seen this project's
+    # schema at all.
+    with get_engine().begin() as conn:
+        conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
     Base.metadata.create_all(get_engine())
 
 

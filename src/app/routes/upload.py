@@ -6,7 +6,9 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, File, Request, UploadFile
 from fastapi.responses import RedirectResponse
-from sqlalchemy import select
+from rq.exceptions import NoSuchJobError
+from rq.job import Job
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from src.app.deps import is_postgres_backend, templates
@@ -15,7 +17,10 @@ from src.app.rate_limit import enforce_rate_limit
 from src.index.embed_toggle import get_active_embed_provider
 from src.index.embedder import embed_passages
 from src.ingest.chunker import chunk_document
-from src.ingest.document_parser import parse_pdf
+from src.ingest.document_parser import parse_document
+from src.ingest.upload_job import process_upload
+from src.platform.credentials import get_credentials
+from src.platform.queue import get_queue, get_redis_conn
 from src.store.relational import get_session
 from src.store.schema import Chunk as ChunkRow
 from src.store.schema import Paper as PaperRow
@@ -59,8 +64,37 @@ def _own_documents(session: Session, session_id: str) -> list[dict]:
     return [{"document_id": r[0], "title": r[1], "ingested_at": r[2]} for r in rows]
 
 
+def _job_status_context(job_id: str, session_id: str) -> dict:
+    """Phase 3 stage 3: shared by GET /upload (first page load, server-
+    rendered) and GET /upload/status/{job_id} (htmx polling) so the two
+    never compute this differently. Session-id is embedded in the job's
+    own meta at enqueue time and checked here — a job_id belonging to a
+    different visitor is treated as unknown, never confirmed to exist,
+    same not-found-not-403 convention as everywhere else in this file.
+    """
+    try:
+        job = Job.fetch(job_id, connection=get_redis_conn())
+    except NoSuchJobError:
+        return {"job_status": "unknown"}
+    if job.meta.get("session_id") != session_id:
+        return {"job_status": "unknown"}
+    if job.is_finished:
+        result = job.result or {}
+        if result.get("status") == "ok":
+            return {"job_status": "done", "document_id": result["document_id"]}
+        return {"job_status": "error", "job_error": result.get("message", "Something went wrong.")}
+    if job.is_failed:
+        # A genuinely unexpected bug, not one of process_upload's own
+        # caught cases (those return a normal "error" result instead of
+        # failing the job — see upload_job.py's own docstring for why).
+        # Never surface job.exc_info directly — it's a raw traceback
+        # string, and this codebase never shows those to a visitor.
+        return {"job_status": "error", "job_error": "Something went wrong while processing this upload."}
+    return {"job_status": "processing", "job_id": job_id}
+
+
 @router.get("/upload")
-def upload_page(request: Request):
+def upload_page(request: Request, job_id: str | None = None):
     # Private uploads need the postgres backend's owner_session_id
     # isolation (see hybrid_postgres.py's _owner_predicate) — the default
     # OpenSearch path has no such concept, so this stays a dormant,
@@ -76,11 +110,24 @@ def upload_page(request: Request):
     finally:
         session.close()
 
-    return templates.TemplateResponse(
-        request,
-        "upload.html",
-        {"active": "upload", "unavailable": False, "documents": documents, "max_mb": _MAX_UPLOAD_MB, "ttl_days": _UPLOAD_TTL_DAYS},
-    )
+    context = {
+        "active": "upload",
+        "unavailable": False,
+        "documents": documents,
+        "max_mb": _MAX_UPLOAD_MB,
+        "ttl_days": _UPLOAD_TTL_DAYS,
+    }
+    if job_id:
+        context.update(_job_status_context(job_id, request.state.session_id))
+    return templates.TemplateResponse(request, "upload.html", context)
+
+
+@router.get("/upload/status/{job_id}")
+def upload_status(request: Request, job_id: str):
+    if not is_postgres_backend():
+        return templates.TemplateResponse(request, "upload.html", {"active": "upload", "unavailable": True})
+    context = _job_status_context(job_id, request.state.session_id)
+    return templates.TemplateResponse(request, "_upload_status.html", context)
 
 
 @router.post("/upload", dependencies=[Depends(enforce_rate_limit)])
@@ -90,95 +137,128 @@ def upload_submit(request: Request, file: UploadFile = File(...)):
 
     session_id = request.state.session_id
     error = None
-    document_id = None
 
-    # Real bug found in review: this route used to be `async def` (for
-    # `await file.read()`), but every subsequent step here — parse_pdf
-    # (CPU-bound), embed_passages (a synchronous httpx.post), and the DB
-    # writes — is blocking, synchronous code. An `async def` route with
-    # no actual `await` inside its blocking work runs directly on the
-    # single event loop thread instead of FastAPI's automatic threadpool
-    # (which is exactly what every OTHER route in this codebase — ask.py,
-    # pipeline.py, corpus.py — gets for free by being a plain `def`
-    # handler). One slow upload would stall every other concurrent
-    # visitor's request on the same worker. `file.file` is the raw,
-    # synchronous SpooledTemporaryFile UploadFile wraps — reading it
-    # directly (no `await`) is the standard way to keep a file-upload
-    # route plain-sync and threadpooled like the rest of this codebase.
-    pdf_bytes = file.file.read()
-    if len(pdf_bytes) > _MAX_UPLOAD_MB * 1024 * 1024:
+    # `file.file.read()` (sync, not `await file.read()`) is still correct
+    # here even though the heavy work moved to a background job — this
+    # plain `def` handler still benefits from FastAPI's threadpool for
+    # the read itself, and rate limiting (enforce_rate_limit above) must
+    # gate on ENQUEUE, not on job execution, so it stays exactly here.
+    raw_bytes = file.file.read()
+    if len(raw_bytes) > _MAX_UPLOAD_MB * 1024 * 1024:
         error = f"That file is larger than the {_MAX_UPLOAD_MB} MB limit for this deployment."
     else:
-        try:
-            # Bytes come straight from the upload, not an HTTP fetch — no
-            # fetch_pdf_bytes/arXiv User-Agent involved, unlike
-            # ingest/pipeline.py's arXiv path. parse_pdf itself is
-            # already generic (just takes bytes), reused as-is.
-            document = parse_pdf(pdf_bytes)
-            document_id = f"upload-{uuid.uuid4().hex}"
-            title = file.filename or document_id
-            # Content-addressed chunk_ids collide across genuinely
-            # identical text within one document (a repeated header,
-            # e.g.) — same dedup rule as ingest/pipeline.py's identical
-            # comment on the arXiv path, not data loss.
-            raw_chunks = chunk_document(document_id, document)
-            chunks = list({c.chunk_id: c for c in raw_chunks}.values())
+        # Phase 3 stage 3: parse/chunk/embed/write now happen in
+        # process_upload (src/ingest/upload_job.py), run by the
+        # background worker thread (src/app/main.py) instead of inline
+        # here — this request returns as soon as the job is queued,
+        # regardless of how large the file is. get_credentials() is
+        # captured NOW, inside the real request, and passed explicitly:
+        # the worker thread has no CredentialsMiddleware-set ContextVar
+        # of its own to read from.
+        document_id = f"upload-{uuid.uuid4().hex}"
+        title = file.filename or document_id
+        job = get_queue().enqueue(
+            process_upload, document_id, file.filename, raw_bytes, session_id, get_credentials(), title
+        )
+        job.meta["session_id"] = session_id
+        job.save_meta()
+        return RedirectResponse(url=f"/upload?job_id={job.id}", status_code=303)
 
-            if not chunks:
-                error = "Couldn't find any extractable text in that PDF — it may be scanned images without a text layer."
+    session = get_session()
+    try:
+        _cleanup_expired_uploads(session)
+        documents = _own_documents(session, session_id)
+    finally:
+        session.close()
+
+    return templates.TemplateResponse(
+        request,
+        "upload.html",
+        {
+            "active": "upload",
+            "unavailable": False,
+            "documents": documents,
+            "max_mb": _MAX_UPLOAD_MB,
+            "ttl_days": _UPLOAD_TTL_DAYS,
+            "error": error,
+        },
+    )
+
+
+@router.post("/upload/{document_id}/pages/{page_number}", dependencies=[Depends(enforce_rate_limit)])
+def upload_page_replace(request: Request, document_id: str, page_number: int, file: UploadFile = File(...)):
+    """Phase 3 stage 2: replace just one page of an already-uploaded PDF
+    without re-processing the whole document. Deliberately PDF-only (see
+    schema.py's Chunk.page_number comment) — the visitor re-uploads a
+    small file containing just the replacement page's content, reusing
+    the exact same parse/chunk/embed pipeline as a normal upload; every
+    resulting chunk is tagged with the URL's page_number (the page being
+    replaced), not whatever page the snippet's own content would imply.
+    """
+    if not is_postgres_backend():
+        return templates.TemplateResponse(request, "upload.html", {"active": "upload", "unavailable": True})
+
+    session_id = request.state.session_id
+    error = None
+
+    session = get_session()
+    try:
+        # Ownership check follows store/runs.py::load_run's established
+        # pattern exactly: missing OR owned by a different session is
+        # indistinguishable "no such document," never a 403 that would
+        # confirm the id exists. A shared/arXiv paper (owner_session_id
+        # is None) is never replaceable through this endpoint either —
+        # None != session_id fails the check the same as a real mismatch.
+        paper = session.get(PaperRow, document_id)
+        if paper is None or paper.owner_session_id != session_id:
+            error = f"No document found with id {document_id!r} for this session."
+        else:
+            raw_bytes = file.file.read()
+            if len(raw_bytes) > _MAX_UPLOAD_MB * 1024 * 1024:
+                error = f"That file is larger than the {_MAX_UPLOAD_MB} MB limit for this deployment."
             else:
-                # Uses the visitor's own BYOK key automatically —
-                # embed_passages -> _embed_jina/_embed_mistral both check
-                # get_credentials() first (see src/index/embedder.py) — a
-                # shared owner embed key would either rate-limit across
-                # every visitor or cost the deployment owner money per
-                # upload, which is exactly why BYOK had to exist before
-                # this feature (Phase 2 plan §5).
-                embed_result = embed_passages([c.text for c in chunks])
-                embedding_provider = get_active_embed_provider()
-
-                session = get_session()
                 try:
-                    session.add(
-                        PaperRow(
-                            arxiv_id=document_id,
-                            title=title,
-                            authors=[],
-                            abstract="",
-                            category=[],
-                            published_date=None,
-                            url="",
-                            source="upload",
-                            owner_session_id=session_id,
-                        )
-                    )
-                    for chunk, vector in zip(chunks, embed_result.vectors):
-                        session.add(
-                            ChunkRow(
-                                chunk_id=chunk.chunk_id,
-                                paper_id=document_id,
-                                section=chunk.section,
-                                text=chunk.text,
-                                char_start=chunk.char_start,
-                                char_end=chunk.char_end,
-                                embedding_model=embed_result.model,
-                                embedding_dim=embed_result.dimension,
-                                owner_session_id=session_id,
-                                embedding=vector,
-                                embedding_provider=embedding_provider,
+                    document = parse_document(file.filename, raw_bytes)
+                    raw_chunks = chunk_document(document_id, document)
+                    chunks = list({c.chunk_id: c for c in raw_chunks}.values())
+
+                    if not chunks:
+                        error = "Couldn't find any extractable text in that file."
+                    else:
+                        embed_result = embed_passages([c.text for c in chunks])
+                        embedding_provider = get_active_embed_provider()
+
+                        # Scoped delete — every other page's chunks are
+                        # untouched by construction, not by convention.
+                        session.execute(
+                            delete(ChunkRow).where(
+                                ChunkRow.paper_id == document_id, ChunkRow.page_number == page_number
                             )
                         )
-                    session.commit()
-                finally:
-                    session.close()
-        except Exception as exc:
-            # Same friendly-message convention as ask.py/pipeline.py — a
-            # missing BYOK key surfaces here as "needs an API key that
-            # isn't configured", not a raw traceback.
-            error = friendly_error_message(exc)
-            document_id = None
+                        for chunk, vector in zip(chunks, embed_result.vectors):
+                            session.add(
+                                ChunkRow(
+                                    chunk_id=chunk.chunk_id,
+                                    paper_id=document_id,
+                                    section=chunk.section,
+                                    text=chunk.text,
+                                    char_start=chunk.char_start,
+                                    char_end=chunk.char_end,
+                                    page_number=page_number,
+                                    embedding_model=embed_result.model,
+                                    embedding_dim=embed_result.dimension,
+                                    owner_session_id=session_id,
+                                    embedding=vector,
+                                    embedding_provider=embedding_provider,
+                                )
+                            )
+                        session.commit()
+                except Exception as exc:
+                    error = friendly_error_message(exc)
+    finally:
+        session.close()
 
-    if error is None and document_id:
+    if error is None:
         return RedirectResponse(url=f"/ask?document_id={document_id}", status_code=303)
 
     session = get_session()

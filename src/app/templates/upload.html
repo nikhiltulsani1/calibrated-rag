@@ -4,7 +4,7 @@
 <h1>Upload</h1>
 
 {% if unavailable %}
-<p class="subtitle">Ask a question about your own PDF, kept private to your browser session.</p>
+<p class="subtitle">Ask a question about your own document, kept private to your browser session.</p>
 <div class="card" style="border-left: 3px solid var(--bad);">
   <strong>Not available on this deployment.</strong>
   <p>
@@ -15,10 +15,11 @@
 </div>
 {% else %}
 <p class="subtitle">
-  Upload a PDF and ask questions about it privately — it's never merged into the shared corpus,
-  and only your own browser session can see or query it. Needs at least one of your own API keys
-  set on the <a href="/settings">Settings</a> page. Files over {{ max_mb }} MB aren't accepted, and
-  uploads are automatically removed after {{ ttl_days }} days.
+  Upload a document (PDF, Word, text, Markdown, or HTML) and ask questions about it privately —
+  it's never merged into the shared corpus, and only your own browser session can see or query it.
+  Needs at least one of your own API keys set on the <a href="/settings">Settings</a> page. Files
+  over {{ max_mb }} MB aren't accepted, and uploads are automatically removed after {{ ttl_days }}
+  days.
 </p>
 
 {% if error %}
@@ -28,22 +29,39 @@
 </div>
 {% endif %}
 
+{% if job_status %}
+{% include "_upload_status.html" %}
+{% endif %}
+
 <form class="upload-form" method="post" action="/upload" enctype="multipart/form-data">
-  <input type="file" name="file" accept="application/pdf" required>
+  <input type="file" name="file" accept=".pdf,.docx,.txt,.md,.markdown,.html,.htm" required>
   <button type="submit">Upload &amp; ask</button>
 </form>
+<p class="subtitle">Processing happens in the background — this page will update automatically once it's done.</p>
 
 <h2>Your documents</h2>
 {% if not documents %}
 <p class="empty-state">Nothing uploaded yet this session.</p>
 {% else %}
 <table>
-  <tr><th>Title</th><th>Uploaded</th><th></th></tr>
+  <tr><th>Title</th><th>Uploaded</th><th></th><th></th></tr>
   {% for doc in documents %}
   <tr>
     <td>{{ doc.title }}</td>
     <td>{{ doc.ingested_at }}</td>
     <td><a href="/ask?document_id={{ doc.document_id }}">Ask about this document</a></td>
+    <td>
+      <details>
+        <summary>Replace a page</summary>
+        <form class="upload-form" method="post" action="/upload/{{ doc.document_id }}/pages/1"
+              enctype="multipart/form-data" onsubmit="this.action=this.action.replace(/pages\/\d+$/, 'pages/' + this.pagenum.value); return true;">
+          <p class="subtitle">PDF documents only — re-upload just the replacement page.</p>
+          <label>Page number <input type="number" name="pagenum" min="1" value="1" required style="width:5rem"></label>
+          <input type="file" name="file" accept=".pdf" required>
+          <button type="submit">Replace page</button>
+        </form>
+      </details>
+    </td>
   </tr>
   {% endfor %}
 </table>

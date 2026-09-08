@@ -20,6 +20,19 @@ itsdangerous==2.2.0
 pydantic==2.13.4
 redis==8.1.0
 pymupdf==1.28.2
+# Phase 3: multi-format document parsing (src/ingest/document_parser.py)
+# — pymupdf above stays PDF-only; these cover DOCX and HTML respectively.
+# lxml is python-docx's own real dependency (XML parsing), not something
+# chosen here — resolved automatically, not pinned separately.
+python-docx==1.2.0
+beautifulsoup4==4.15.0
+# Phase 3 stage 3: async upload processing (src/ingest/upload_job.py) —
+# a Redis-native job queue, reusing the exact Redis connection already
+# mandatory here (see src/platform/queue.py's own comment on why this
+# needs its own connection, not src/platform/cache.py's), consumed by a
+# background thread inside the existing free web service rather than a
+# separate paid Render worker.
+rq==2.12.0
 opentelemetry-api==1.41.0
 opentelemetry-sdk==1.41.0
 opentelemetry-exporter-otlp-proto-http==1.41.0

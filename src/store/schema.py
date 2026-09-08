@@ -90,8 +90,38 @@ class Chunk(Base):
     text_tsv: Mapped[str | None] = mapped_column(
         TSVECTOR, Computed("to_tsvector('english', text)", persisted=True), nullable=True
     )
+    # Phase 3 stage 2: deliberately PDF-only — DOCX pagination is a
+    # rendering-time concept (depends on the reader's page size/font, not
+    # stably stored), TXT/HTML have no page concept at all. NULL for
+    # every non-PDF upload and every OpenSearch-path row; only PDF's
+    # parse_pdf ever sets it. This is the key the per-page update
+    # endpoint (routes/upload.py) deletes/re-inserts chunks by, so every
+    # other page's chunks are untouched by construction.
+    page_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
-    __table_args__ = (Index("ix_chunks_text_tsv", "text_tsv", postgresql_using="gin"),)
+    __table_args__ = (
+        Index("ix_chunks_text_tsv", "text_tsv", postgresql_using="gin"),
+        # ANN index for the dense arm's `.cosine_distance()` search
+        # (hybrid_postgres.py's `_dense_search`) — real gap found while
+        # discussing scale: this table had no index on `embedding` at
+        # all, so every dense query was a full sequential scan over
+        # every row. Invisible at the corpus's current size (hundreds of
+        # chunks); at real scale it's the difference between a
+        # millisecond ANN lookup and a query that gets slower linearly
+        # with corpus size. `vector_cosine_ops` matches the distance
+        # operator actually used in queries — an HNSW index built with
+        # the wrong op class is silently never used by the planner for a
+        # `cosine_distance()` query. `m`/`ef_construction` are pgvector's
+        # own defaults, made explicit rather than implicit so a future
+        # tuning pass has an obvious place to change them.
+        Index(
+            "ix_chunks_embedding_hnsw",
+            "embedding",
+            postgresql_using="hnsw",
+            postgresql_with={"m": 16, "ef_construction": 64},
+            postgresql_ops={"embedding": "vector_cosine_ops"},
+        ),
+    )
 
     paper: Mapped["Paper"] = relationship(back_populates="chunks")
 

@@ -74,3 +74,27 @@ def test_offsets_accumulate_across_sections():
     chunks = chunk_document("1234.5678", doc)
     assert (chunks[0].char_start, chunks[0].char_end) == (0, 5)
     assert (chunks[1].char_start, chunks[1].char_end) == (5, 10)
+
+
+def test_page_propagates_from_section_to_every_chunk_in_it():
+    # Phase 3 stage 2: page_number is how the per-page update endpoint
+    # deletes/re-inserts scoped chunks — a chunk that lost its section's
+    # page during chunking would be untouched by every future page
+    # replace, silently accumulating stale content.
+    doc = ParsedDocument(
+        sections=[
+            ParsedSection(heading="A", text="x" * 5000, page=1),
+            ParsedSection(heading="B", text="short", page=2),
+        ]
+    )
+    chunks = chunk_document("1234.5678", doc)
+    page1_chunks = [c for c in chunks if c.section == "A"]
+    assert len(page1_chunks) > 1  # windowed into multiple chunks
+    assert all(c.page == 1 for c in page1_chunks)
+    assert [c.page for c in chunks if c.section == "B"] == [2]
+
+
+def test_page_defaults_to_none_for_non_pdf_sections():
+    doc = ParsedDocument(sections=[ParsedSection(heading=None, text="plain text")])
+    chunks = chunk_document("1234.5678", doc)
+    assert chunks[0].page is None

@@ -23,6 +23,10 @@ class Chunk:
     text: str
     char_start: int
     char_end: int
+    # Phase 3 stage 2: propagated straight from ParsedSection.page (only
+    # ever set by parse_pdf) — see src/store/schema.py's Chunk.page_number
+    # for why this is deliberately PDF-only.
+    page: int | None = None
 
 
 def _chunk_id(arxiv_id: str, text: str) -> str:
@@ -68,6 +72,7 @@ def chunk_document(arxiv_id: str, document: ParsedDocument) -> list[Chunk]:
                     text=window_text,
                     char_start=offset + rel_start,
                     char_end=offset + rel_end,
+                    page=section.page,
                 )
             )
         offset += len(section.text)
